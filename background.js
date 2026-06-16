@@ -109,12 +109,48 @@ function extractEvents(details) {
   return events;
 }
 
+// ---- dataLayer buffer --------------------------------------------------
+
+const MAX_DL_BUFFER = 200;
+// { payload, time, tabId, claimed }
+const recentDLPushes = [];
+
+// Flatten a nested dataLayer object into dot-notation key/value pairs.
+// e.g. { conversio: { segment: "X" } } → { "conversio.segment": "X" }
+function flattenObject(obj, prefix) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      Object.assign(out, flattenObject(v, key));
+    } else {
+      out[key] = v === null ? "null" : String(v);
+    }
+  }
+  return out;
+}
+
 // ---- storage + badge ---------------------------------------------------
 
 let panelOpen = false; // tracked via a long-lived port from the side panel
 
 async function recordEvents(newEvents) {
   if (!newEvents.length) return;
+
+  // Attach any matching dataLayer pushes to each GA4 event.
+  // A push matches if it fired within 1 second before the GA4 hit
+  // and hasn't already been claimed by another event.
+  const now = Date.now();
+  for (const ev of newEvents) {
+    const matches = recentDLPushes.filter(
+      (dl) => !dl.claimed && dl.time <= ev.time && ev.time - dl.time <= 1000
+    );
+    if (matches.length) {
+      ev.dataLayerPushes = matches.map((m) => m.payload);
+      matches.forEach((m) => (m.claimed = true));
+    }
+  }
+
   const { events = [], unseen = 0 } = await chrome.storage.session.get(["events", "unseen"]);
   const updated = [...newEvents.reverse(), ...events].slice(0, MAX_EVENTS);
   // While the panel is open the user is watching live — no unseen counter
@@ -147,9 +183,15 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === "clear-events") {
+  if (!msg) return;
+  if (msg.type === "clear-events") {
     chrome.storage.session.set({ events: [], unseen: 0 });
     chrome.action.setBadgeText({ text: "" });
+    recentDLPushes.length = 0;
+  }
+  if (msg.type === "datalayer-push" && msg.payload) {
+    recentDLPushes.push({ payload: msg.payload, time: msg.time || Date.now(), claimed: false });
+    if (recentDLPushes.length > MAX_DL_BUFFER) recentDLPushes.shift();
   }
 });
 

@@ -77,6 +77,20 @@ function section(label, entries) {
   return frag;
 }
 
+// Flatten nested objects into dot-notation pairs for display.
+function flattenObject(obj, prefix) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      Object.assign(out, flattenObject(v, key));
+    } else {
+      out[key] = v === null ? "null" : String(v);
+    }
+  }
+  return out;
+}
+
 function renderEvent(ev, isNew) {
   const node = rowTemplate.content.cloneNode(true);
   const details = node.querySelector(".event");
@@ -103,7 +117,37 @@ function renderEvent(ev, isNew) {
     body.appendChild(section("Raw params", Object.entries(ev.allParams || {})));
   }
 
+  // dataLayer pushes that preceded this GA4 hit
+  for (const push of (ev.dataLayerPushes || [])) {
+    const flat = flattenObject(push);
+    const entries = Object.entries(flat).filter(([k]) => k !== "event");
+    if (entries.length) {
+      body.appendChild(dlSection(`dataLayer · ${push.event || "push"}`, entries));
+    }
+  }
+
   return node;
+}
+
+function dlSection(label, entries) {
+  const frag = document.createDocumentFragment();
+  const lab = document.createElement("div");
+  lab.className = "section-label section-label--dl";
+  lab.textContent = label;
+  frag.appendChild(lab);
+  for (const [k, v] of entries) {
+    const row = document.createElement("div");
+    row.className = "kv";
+    const kEl = document.createElement("span");
+    kEl.className = "k k--dl";
+    kEl.textContent = k;
+    const vEl = document.createElement("span");
+    vEl.className = "v";
+    vEl.textContent = v;
+    row.append(kEl, vEl);
+    frag.appendChild(row);
+  }
+  return frag;
 }
 
 // Split events into navigation groups. A new group starts on every

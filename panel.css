@@ -232,3 +232,12 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 .kv { display: flex; gap: 8px; padding: 1.5px 0; }
 .kv .k { color: var(--accent); flex-shrink: 0; }
 .kv .v { color: var(--text); word-break: break-all; }
+
+.section-label--dl {
+  color: var(--amber);
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.k--dl { color: var(--amber); opacity: 0.85; }

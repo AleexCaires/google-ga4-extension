@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "GA4 Event Spy",
-  "version": "1.5.0",
-  "description": "Watches outgoing GA4 hits and shows every event as it fires, with parameters.",
+  "version": "1.6.0",
+  "description": "Watches outgoing GA4 hits and shows every event as it fires, with parameters and dataLayer context.",
   "permissions": ["webRequest", "storage", "sidePanel"],
   "host_permissions": [
     "*://*/*"
@@ -10,6 +10,19 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["datalayer-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
   "side_panel": {
     "default_path": "panel.html"
   },
