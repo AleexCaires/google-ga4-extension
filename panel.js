@@ -5,13 +5,15 @@ const emptyEl = document.getElementById("empty-state");
 const countEl = document.getElementById("event-count");
 const filterEl = document.getElementById("filter");
 const clearEl = document.getElementById("clear");
+const toggleDLEl = document.getElementById("toggle-dl");
 const rowTemplate = document.getElementById("event-row-template");
 
 let allEvents = [];
-let knownTimes = new Set(); // to mark newly arrived events while popup is open
-// groupIndex → open state; persists across live re-renders
+let allDLEvents = [];
+let knownTimes = new Set();
 const groupOpenState = new Map();
 let activeTabId = null;
+let showDL = false;
 
 function timeLabel(ts) {
   const d = new Date(ts);
@@ -151,6 +153,23 @@ function dlSection(label, entries) {
   return frag;
 }
 
+function renderDLEvent(ev, isNew) {
+  const node = rowTemplate.content.cloneNode(true);
+  const details = node.querySelector(".event");
+  details.classList.add("event--dl");
+  if (isNew) details.classList.add("is-new");
+
+  node.querySelector(".event-name").textContent = ev.name;
+  node.querySelector(".event-meta").textContent = timeLabel(ev.time);
+
+  const body = node.querySelector(".event-body");
+  const flat = flattenObject(ev.payload || {});
+  const entries = Object.entries(flat).filter(([k]) => k !== "event");
+  if (entries.length) body.appendChild(dlSection("dataLayer push", entries));
+
+  return node;
+}
+
 // Split events into navigation groups. A new group starts on every
 // page_view event (real page load / SPA navigation / refresh). Walking
 // oldest-first keeps same-page events together; we reverse at the end
@@ -210,17 +229,29 @@ function renderGroup(group, groupIndex, isNewest) {
   const body = document.createElement("div");
   body.className = "nav-group-events";
   for (const ev of group.events) {
-    body.appendChild(renderEvent(ev, !knownTimes.has(ev.time)));
+    const node = ev.type === "datalayer"
+      ? renderDLEvent(ev, !knownTimes.has(ev.time))
+      : renderEvent(ev, !knownTimes.has(ev.time));
+    body.appendChild(node);
   }
   wrap.appendChild(body);
   return wrap;
 }
 
-function render() {
-  const query = filterEl.value.trim().toLowerCase();
-  const tabEvents = activeTabId !== null
+function getMergedEvents() {
+  const ga4 = activeTabId !== null
     ? allEvents.filter((ev) => ev.tabId === activeTabId)
     : allEvents;
+  if (!showDL) return ga4;
+  const dl = activeTabId !== null
+    ? allDLEvents.filter((ev) => ev.tabId === activeTabId)
+    : allDLEvents;
+  return [...ga4, ...dl].sort((a, b) => b.time - a.time);
+}
+
+function render() {
+  const query = filterEl.value.trim().toLowerCase();
+  const tabEvents = getMergedEvents();
   const visible = query
     ? tabEvents.filter((ev) => ev.name.toLowerCase().includes(query))
     : tabEvents;
@@ -244,19 +275,22 @@ function render() {
 }
 
 async function load(markKnown) {
-  const { events = [] } = await chrome.storage.session.get("events");
+  const { events = [], dlEvents = [] } = await chrome.storage.session.get(["events", "dlEvents"]);
   allEvents = events;
-  if (markKnown) knownTimes = new Set(events.map((e) => e.time));
+  allDLEvents = dlEvents;
+  if (markKnown) {
+    knownTimes = new Set([...events.map((e) => e.time), ...dlEvents.map((e) => e.time)]);
+  }
   render();
 }
 
 // Live updates while the panel is open
 chrome.storage.session.onChanged.addListener((changes) => {
-  if (changes.events) {
-    // Newest events render at the top; stay pinned there unless the
-    // user has scrolled down to inspect older events.
-    const pinned = listEl.scrollTop < 40;
-    allEvents = changes.events.newValue || [];
+  const pinned = listEl.scrollTop < 40;
+  let changed = false;
+  if (changes.events) { allEvents = changes.events.newValue || []; changed = true; }
+  if (changes.dlEvents) { allDLEvents = changes.dlEvents.newValue || []; changed = true; }
+  if (changed) {
     render();
     if (pinned) listEl.scrollTop = 0;
   }
@@ -267,7 +301,15 @@ filterEl.addEventListener("input", render);
 clearEl.addEventListener("click", () => {
   chrome.runtime.sendMessage({ type: "clear-events" });
   allEvents = [];
+  allDLEvents = [];
   knownTimes = new Set();
+  render();
+});
+
+toggleDLEl.addEventListener("click", () => {
+  showDL = !showDL;
+  toggleDLEl.classList.toggle("active", showDL);
+  groupOpenState.clear();
   render();
 });
 

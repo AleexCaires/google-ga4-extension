@@ -4,7 +4,8 @@
 // event(s) from the URL query string and/or the batched POST body, stores
 // them in chrome.storage.session, and keeps a badge counter on the icon.
 
-const MAX_EVENTS = 300; // keep the most recent N events
+const MAX_EVENTS = 300;
+const MAX_DL_EVENTS = 300;
 
 // GA4 collect endpoints. Add your own server-side GTM domain here if needed,
 // and also add it to host_permissions in manifest.json.
@@ -182,16 +183,32 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender) => {
   if (!msg) return;
   if (msg.type === "clear-events") {
-    chrome.storage.session.set({ events: [], unseen: 0 });
+    chrome.storage.session.set({ events: [], dlEvents: [], unseen: 0 });
     chrome.action.setBadgeText({ text: "" });
     recentDLPushes.length = 0;
   }
   if (msg.type === "datalayer-push" && msg.payload) {
-    recentDLPushes.push({ payload: msg.payload, time: msg.time || Date.now(), claimed: false });
+    const tabId = sender && sender.tab ? sender.tab.id : -1;
+    const ts = msg.time || Date.now();
+    recentDLPushes.push({ payload: msg.payload, time: ts, tabId, claimed: false });
     if (recentDLPushes.length > MAX_DL_BUFFER) recentDLPushes.shift();
+
+    // Also store as a standalone event for the DL toggle feed.
+    const dlEvent = {
+      type: "datalayer",
+      name: msg.payload.event || "(unknown)",
+      payload: msg.payload,
+      pageLocation: msg.pageLocation || "",
+      time: ts,
+      tabId
+    };
+    chrome.storage.session.get("dlEvents").then(({ dlEvents = [] }) => {
+      const updated = [dlEvent, ...dlEvents].slice(0, MAX_DL_EVENTS);
+      chrome.storage.session.set({ dlEvents: updated });
+    });
   }
 });
 
