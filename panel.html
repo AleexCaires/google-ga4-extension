@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <header>
+    <div class="title">
+      <span class="dot" id="live-dot"></span>
+      <h1>GA4 Event Spy</h1>
+      <span class="count" id="event-count">0</span>
+    </div>
+    <div class="controls">
+      <input type="search" id="filter" placeholder="Filter by event name…" autocomplete="off" />
+      <button id="clear" title="Clear all captured events">Clear</button>
+    </div>
+  </header>
+
+  <main id="event-list">
+    <div class="empty" id="empty-state">
+      <p>No events captured yet.</p>
+      <p class="hint">Browse a page that sends GA4 hits and they'll appear here in real time.</p>
+    </div>
+  </main>
+
+  <template id="event-row-template">
+    <details class="event">
+      <summary>
+        <span class="event-name"></span>
+        <span class="event-meta"></span>
+      </summary>
+      <div class="event-body"></div>
+    </details>
+  </template>
+
+  <script src="panel.js"></script>
+</body>
+</html>
