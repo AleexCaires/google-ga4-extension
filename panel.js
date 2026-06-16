@@ -294,5 +294,4 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   render();
 });
 
-await initActiveTab();
-load(true);
+initActiveTab().then(() => load(true));
