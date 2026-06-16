@@ -114,7 +114,7 @@ h1 { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; }
 }
 
 #toggle-dl:hover { color: var(--text); border-color: var(--text-dim); }
-#toggle-dl.active { color: var(--amber); border-color: var(--amber); }
+#toggle-dl.active { color: var(--accent); border-color: var(--accent); }
 #toggle-dl:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 main {
@@ -220,9 +220,9 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 
 .event.is-new .event-name { color: var(--amber); }
 
-.event.event--dl { border-color: rgba(227, 179, 65, 0.3); }
-.event.event--dl[open] { border-color: var(--amber); }
-.event-name--dl { color: var(--amber) !important; }
+.event.event--dl { border-color: rgba(90, 176, 247, 0.3); }
+.event.event--dl[open] { border-color: var(--accent); }
+.event-name--dl { color: var(--accent) !important; }
 
 .event-meta {
   margin-left: auto;
