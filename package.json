@@ -1,0 +1,8 @@
+{
+  "name": "ga4-event-spy",
+  "version": "1.5.0",
+  "description": "Chrome extension that watches outgoing GA4 hits and displays events in a side panel.",
+  "scripts": {
+    "dev": "web-ext run --target=chromium"
+  }
+}
