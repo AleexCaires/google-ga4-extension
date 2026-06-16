@@ -159,7 +159,9 @@ function renderDLEvent(ev, isNew) {
   details.classList.add("event--dl");
   if (isNew) details.classList.add("is-new");
 
-  node.querySelector(".event-name").textContent = ev.name;
+  const nameEl = node.querySelector(".event-name");
+  nameEl.textContent = ev.name;
+  nameEl.classList.add("event-name--dl");
   node.querySelector(".event-meta").textContent = timeLabel(ev.time);
 
   const body = node.querySelector(".event-body");
