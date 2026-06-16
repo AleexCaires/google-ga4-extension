@@ -11,6 +11,7 @@ let allEvents = [];
 let knownTimes = new Set(); // to mark newly arrived events while popup is open
 // groupIndex → open state; persists across live re-renders
 const groupOpenState = new Map();
+let activeTabId = null;
 
 function timeLabel(ts) {
   const d = new Date(ts);
@@ -217,15 +218,18 @@ function renderGroup(group, groupIndex, isNewest) {
 
 function render() {
   const query = filterEl.value.trim().toLowerCase();
-  const visible = query
-    ? allEvents.filter((ev) => ev.name.toLowerCase().includes(query))
+  const tabEvents = activeTabId !== null
+    ? allEvents.filter((ev) => ev.tabId === activeTabId)
     : allEvents;
+  const visible = query
+    ? tabEvents.filter((ev) => ev.name.toLowerCase().includes(query))
+    : tabEvents;
 
-  countEl.textContent = String(allEvents.length);
+  countEl.textContent = String(tabEvents.length);
   listEl.querySelectorAll(".nav-group").forEach((n) => n.remove());
   emptyEl.style.display = visible.length ? "none" : "";
 
-  if (query && !visible.length && allEvents.length) {
+  if (query && !visible.length && tabEvents.length) {
     emptyEl.querySelector("p").textContent = "No events match that filter.";
   } else {
     emptyEl.querySelector("p").textContent = "No events captured yet.";
@@ -276,4 +280,19 @@ function connectToBackground() {
   });
 }
 connectToBackground();
+
+// Track which tab is active so the panel only shows that tab's events.
+async function initActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab) activeTabId = tab.id;
+}
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  activeTabId = tabId;
+  // Clear group state — different tab, different set of groups.
+  groupOpenState.clear();
+  render();
+});
+
+await initActiveTab();
 load(true);

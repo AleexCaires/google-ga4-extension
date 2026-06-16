@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "GA4 Event Spy",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Watches outgoing GA4 hits and shows every event as it fires, with parameters and dataLayer context.",
-  "permissions": ["webRequest", "storage", "sidePanel"],
+  "permissions": ["webRequest", "storage", "sidePanel", "tabs"],
   "host_permissions": [
     "*://*/*"
   ],
