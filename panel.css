@@ -108,6 +108,8 @@ main {
 }
 
 .nav-group { margin-bottom: 10px; }
+.nav-group > summary { list-style: none; }
+.nav-group > summary::-webkit-details-marker { display: none; }
 
 .nav-group-header {
   position: sticky;
@@ -119,6 +121,21 @@ main {
   padding: 5px 4px 5px 6px;
   border-left: 2px solid var(--accent);
   z-index: 1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.nav-group-header:hover { background: var(--bg-row-hover); }
+
+.nav-group-caret {
+  font-size: 10px;
+  color: var(--text-dim);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.nav-group[open] > .nav-group-header .nav-group-caret {
+  transform: rotate(90deg);
 }
 
 .nav-group-label {

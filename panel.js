@@ -9,6 +9,8 @@ const rowTemplate = document.getElementById("event-row-template");
 
 let allEvents = [];
 let knownTimes = new Set(); // to mark newly arrived events while popup is open
+// groupIndex → open state; persists across live re-renders
+const groupOpenState = new Map();
 
 function timeLabel(ts) {
   const d = new Date(ts);
@@ -104,35 +106,45 @@ function renderEvent(ev, isNew) {
   return node;
 }
 
-// Split a newest-first event list into navigation groups. A new group
-// begins whenever the page location changes between consecutive events —
-// so revisiting the same URL later starts a fresh group.
+// Split events into navigation groups. A new group starts on every
+// page_view event (real page load / SPA navigation / refresh). Walking
+// oldest-first keeps same-page events together; we reverse at the end
+// for newest-group-first display.
 function groupByNavigation(events) {
   const groups = [];
   let current = null;
-  // Walk oldest-first so consecutive same-page events cluster naturally,
-  // then we reverse for newest-first display.
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
-    const loc = ev.pageLocation || "";
-    if (!current || current.location !== loc) {
-      current = { location: loc, events: [] };
+    if (!current || ev.name === "page_view") {
+      current = { location: ev.pageLocation || "", events: [] };
       groups.push(current);
     }
     current.events.push(ev);
   }
-  // Newest group first; newest event first within each group.
   groups.reverse();
   groups.forEach((g) => g.events.reverse());
   return groups;
 }
 
-function renderGroup(group, query) {
-  const wrap = document.createElement("div");
+function renderGroup(group, groupIndex, isNewest) {
+  const wrap = document.createElement("details");
   wrap.className = "nav-group";
 
-  const header = document.createElement("div");
+  // Newest group open by default; older groups collapsed.
+  // Manual toggle overrides the default once the user has interacted.
+  const savedOpen = groupOpenState.get(groupIndex);
+  wrap.open = savedOpen !== undefined ? savedOpen : isNewest;
+
+  wrap.addEventListener("toggle", () => {
+    groupOpenState.set(groupIndex, wrap.open);
+  });
+
+  const header = document.createElement("summary");
   header.className = "nav-group-header";
+
+  const caret = document.createElement("span");
+  caret.className = "nav-group-caret";
+  caret.textContent = "▸";
 
   const label = document.createElement("span");
   label.className = "nav-group-label";
@@ -147,7 +159,7 @@ function renderGroup(group, query) {
   count.className = "nav-group-count";
   count.textContent = group.events.length;
 
-  header.append(label, host, count);
+  header.append(caret, label, host, count);
   wrap.appendChild(header);
 
   const body = document.createElement("div");
@@ -176,9 +188,10 @@ function render() {
   }
 
   const frag = document.createDocumentFragment();
-  for (const group of groupByNavigation(visible)) {
-    frag.appendChild(renderGroup(group, query));
-  }
+  const groups = groupByNavigation(visible);
+  groups.forEach((group, i) => {
+    frag.appendChild(renderGroup(group, i, i === 0));
+  });
   listEl.appendChild(frag);
 }
 
