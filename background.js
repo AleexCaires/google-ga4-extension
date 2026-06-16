@@ -191,6 +191,10 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     recentDLPushes.length = 0;
   }
   if (msg.type === "datalayer-push" && msg.payload) {
+    const eventName = msg.payload.event || "";
+    // Drop high-frequency GTM internal timer events — they're noise.
+    if (eventName === "gtm.timer") return;
+
     const tabId = sender && sender.tab ? sender.tab.id : -1;
     const ts = msg.time || Date.now();
     recentDLPushes.push({ payload: msg.payload, time: ts, tabId, claimed: false });
