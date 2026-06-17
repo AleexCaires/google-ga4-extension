@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "GA4 Event Spy",
+  "name": "Conversio DataSpy",
   "version": "1.8.0",
   "description": "Watches outgoing GA4 hits and shows every event as it fires, with parameters and dataLayer context.",
   "permissions": ["webRequest", "storage", "sidePanel", "tabs"],
@@ -27,7 +27,7 @@
     "default_path": "panel.html"
   },
   "action": {
-    "default_title": "GA4 Event Spy"
+    "default_title": "Conversio DataSpy"
   },
   "icons": {
     "16": "icons/icon16.png",
