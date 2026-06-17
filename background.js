@@ -83,9 +83,18 @@ function extractEvents(details) {
   const batched = bodyLines.filter((line) => /(^|&)en=/.test(line));
 
   if (batched.length) {
+    // For batched hits the URL carries session-level params only.
+    // Strip any ep.*/epn.*/up.*/upn.* from the base so they don't
+    // bleed into every event — each event's own body line has its params.
+    const sessionBase = Object.fromEntries(
+      Object.entries(baseParams).filter(([k]) =>
+        !k.startsWith("ep.") && !k.startsWith("epn.") &&
+        !k.startsWith("up.") && !k.startsWith("upn.")
+      )
+    );
     for (const line of batched) {
       const lineParams = paramsToObject(new URLSearchParams(line));
-      events.push(buildEvent({ ...baseParams, ...lineParams }, meta));
+      events.push(buildEvent({ ...sessionBase, ...lineParams }, meta));
     }
     // The URL itself may *also* carry an event alongside a batch
     if (baseParams.en) events.unshift(buildEvent(baseParams, meta));
