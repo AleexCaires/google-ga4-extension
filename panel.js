@@ -125,11 +125,8 @@ function renderEvent(ev, isNew, warn) {
 
   // dataLayer pushes that preceded this GA4 hit
   for (const push of (ev.dataLayerPushes || [])) {
-    const flat = flattenObject(push);
-    const entries = Object.entries(flat).filter(([k]) => k !== "event");
-    if (entries.length) {
-      body.appendChild(dlSection(`dataLayer · ${push.event || "push"}`, entries));
-    }
+    const hasProps = Object.keys(push).filter(k => k !== "event").length > 0;
+    if (hasProps) body.appendChild(dlSection(`dataLayer · ${push.event || "push"}`, push, ["event"]));
   }
 
   // Document info footer
@@ -163,24 +160,52 @@ function docInfo(fields) {
   return frag;
 }
 
-function dlSection(label, entries) {
+// Render an object as a collapsible tree — nested objects collapse to
+// "{ N props }" by default, scalar values are always visible.
+function renderDLTree(obj, skipKeys = []) {
+  const wrap = document.createElement("div");
+  wrap.className = "dl-tree";
+  for (const [k, v] of Object.entries(obj)) {
+    if (skipKeys.includes(k)) continue;
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      const count = Object.keys(v).length;
+      const node = document.createElement("details");
+      node.className = "dl-tree-node";
+      const summary = document.createElement("summary");
+      summary.className = "dl-tree-summary";
+      const keyEl = document.createElement("span");
+      keyEl.className = "dl-tree-key";
+      keyEl.textContent = k + ":";
+      const badge = document.createElement("span");
+      badge.className = "dl-tree-badge";
+      badge.textContent = `{ ${count} props }`;
+      summary.append(keyEl, badge);
+      node.appendChild(summary);
+      node.appendChild(renderDLTree(v));
+      wrap.appendChild(node);
+    } else {
+      const row = document.createElement("div");
+      row.className = "dl-tree-row";
+      const keyEl = document.createElement("span");
+      keyEl.className = "dl-tree-key";
+      keyEl.textContent = k + ":";
+      const valEl = document.createElement("span");
+      valEl.className = "dl-tree-val";
+      valEl.textContent = v === null ? "null" : String(v);
+      row.append(keyEl, valEl);
+      wrap.appendChild(row);
+    }
+  }
+  return wrap;
+}
+
+function dlSection(label, payload, skipKeys = []) {
   const frag = document.createDocumentFragment();
   const lab = document.createElement("div");
   lab.className = "section-label section-label--dl";
   lab.textContent = label;
   frag.appendChild(lab);
-  for (const [k, v] of entries) {
-    const row = document.createElement("div");
-    row.className = "kv";
-    const kEl = document.createElement("span");
-    kEl.className = "k k--dl";
-    kEl.textContent = k;
-    const vEl = document.createElement("span");
-    vEl.className = "v";
-    vEl.textContent = v;
-    row.append(kEl, vEl);
-    frag.appendChild(row);
-  }
+  frag.appendChild(renderDLTree(payload, skipKeys));
   return frag;
 }
 
@@ -196,9 +221,9 @@ function renderDLEvent(ev, isNew) {
   node.querySelector(".event-meta").textContent = timeLabel(ev.time);
 
   const body = node.querySelector(".event-body");
-  const flat = flattenObject(ev.payload || {});
-  const entries = Object.entries(flat).filter(([k]) => k !== "event");
-  if (entries.length) body.appendChild(dlSection("dataLayer push", entries));
+  const payload = ev.payload || {};
+  const hasProps = Object.keys(payload).filter(k => k !== "event").length > 0;
+  if (hasProps) body.appendChild(dlSection("dataLayer push", payload, ["event"]));
 
   return node;
 }
