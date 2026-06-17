@@ -13,7 +13,7 @@ let allDLEvents = [];
 let knownTimes = new Set();
 const groupOpenState = new Map();
 let activeTabId = null;
-let showDL = false;
+let showDL = true;
 
 function timeLabel(ts) {
   const d = new Date(ts);
@@ -165,12 +165,14 @@ function docInfo(fields) {
 function renderDLTree(obj, skipKeys = []) {
   const wrap = document.createElement("div");
   wrap.className = "dl-tree";
+  if (!obj || typeof obj !== "object") return wrap;
   for (const [k, v] of Object.entries(obj)) {
     if (skipKeys.includes(k)) continue;
     if (v !== null && typeof v === "object" && !Array.isArray(v)) {
       const count = Object.keys(v).length;
       const node = document.createElement("details");
       node.className = "dl-tree-node";
+      node.open = true;
       const summary = document.createElement("summary");
       summary.className = "dl-tree-summary";
       const keyEl = document.createElement("span");
@@ -295,12 +297,16 @@ function renderGroup(group, groupIndex, isNewest) {
   const body = document.createElement("div");
   body.className = "nav-group-events";
   for (const ev of group.events) {
-    const isNew = !knownTimes.has(ev.time);
-    const warn = warnTimes.has(ev.time) && ev.name && ev.name.startsWith("conversio_");
-    const node = ev.type === "datalayer"
-      ? renderDLEvent(ev, isNew)
-      : renderEvent(ev, isNew, warn);
-    body.appendChild(node);
+    try {
+      const isNew = !knownTimes.has(ev.time);
+      const warn = warnTimes.has(ev.time) && ev.name && ev.name.startsWith("conversio_");
+      const node = ev.type === "datalayer"
+        ? renderDLEvent(ev, isNew)
+        : renderEvent(ev, isNew, warn);
+      body.appendChild(node);
+    } catch (e) {
+      console.warn("DataSpy: render error for event", ev.name, e);
+    }
   }
   wrap.appendChild(body);
   return wrap;
@@ -312,7 +318,7 @@ function getMergedEvents() {
     : allEvents;
   if (!showDL) return ga4;
   const dl = activeTabId !== null
-    ? allDLEvents.filter((ev) => ev.tabId === activeTabId)
+    ? allDLEvents.filter((ev) => ev.tabId === activeTabId || ev.tabId === -1)
     : allDLEvents;
   return [...ga4, ...dl].sort((a, b) => b.time - a.time);
 }
@@ -404,4 +410,5 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   render();
 });
 
+toggleDLEl.classList.add("active");
 initActiveTab().then(() => load(true));
