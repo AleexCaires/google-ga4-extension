@@ -38,6 +38,7 @@ function buildEvent(params, meta) {
     userProps,
     measurementId: params.tid || "",
     pageLocation: params.dl || "",
+    pageReferrer: params.dr || "",
     pageTitle: params.dt || "",
     allParams: params,
     time: Date.now(),

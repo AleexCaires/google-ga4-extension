@@ -104,19 +104,14 @@ function renderEvent(ev, isNew) {
 
   const body = node.querySelector(".event-body");
 
+  // Parameters (event params + user properties merged into one flat list)
   const epEntries = Object.entries(ev.eventParams || {});
-  if (epEntries.length) body.appendChild(section("Event params", epEntries));
-
   const upEntries = Object.entries(ev.userProps || {});
-  if (upEntries.length) body.appendChild(section("User properties", upEntries));
+  const allParamEntries = [...epEntries, ...upEntries];
 
-  const context = [];
-  if (ev.measurementId) context.push(["measurement_id", ev.measurementId]);
-  if (ev.pageLocation) context.push(["page_location", ev.pageLocation]);
-  if (ev.pageTitle) context.push(["page_title", ev.pageTitle]);
-  if (context.length) body.appendChild(section("Context", context));
-
-  if (!epEntries.length && !upEntries.length && !context.length) {
+  if (allParamEntries.length) {
+    body.appendChild(section("Parameters", allParamEntries));
+  } else {
     body.appendChild(section("Raw params", Object.entries(ev.allParams || {})));
   }
 
@@ -129,7 +124,35 @@ function renderEvent(ev, isNew) {
     }
   }
 
+  // Document info footer
+  const docFields = [];
+  if (ev.pageLocation) docFields.push(["Document Location", ev.pageLocation]);
+  if (ev.pageReferrer) docFields.push(["Document Referrer", ev.pageReferrer]);
+  if (ev.pageTitle)    docFields.push(["Document Title", ev.pageTitle]);
+  if (ev.measurementId) docFields.push(["Measurement ID", ev.measurementId]);
+  if (docFields.length) body.appendChild(docInfo(docFields));
+
   return node;
+}
+
+function docInfo(fields) {
+  const frag = document.createDocumentFragment();
+  const wrap = document.createElement("div");
+  wrap.className = "doc-info";
+  for (const [label, value] of fields) {
+    const row = document.createElement("div");
+    row.className = "doc-info-row";
+    const l = document.createElement("span");
+    l.className = "doc-info-label";
+    l.textContent = label + ":";
+    const v = document.createElement("span");
+    v.className = "doc-info-value";
+    v.textContent = value;
+    row.append(l, v);
+    wrap.appendChild(row);
+  }
+  frag.appendChild(wrap);
+  return frag;
 }
 
 function dlSection(label, entries) {
