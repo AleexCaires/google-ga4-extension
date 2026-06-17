@@ -223,6 +223,14 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 .event.event--dl[open] { border-color: var(--accent); }
 .event-name--dl { color: var(--accent) !important; }
 
+.event-warn {
+  font-size: 11px;
+  color: var(--amber);
+  margin-left: auto;
+  flex-shrink: 0;
+  cursor: default;
+}
+
 .event-meta {
   margin-left: auto;
   font-family: var(--mono);

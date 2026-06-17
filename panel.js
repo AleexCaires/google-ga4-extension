@@ -94,13 +94,21 @@ function flattenObject(obj, prefix) {
   return out;
 }
 
-function renderEvent(ev, isNew) {
+function renderEvent(ev, isNew, warn) {
   const node = rowTemplate.content.cloneNode(true);
   const details = node.querySelector(".event");
   if (isNew) details.classList.add("is-new");
 
   node.querySelector(".event-name").textContent = ev.name;
   node.querySelector(".event-meta").textContent = timeLabel(ev.time);
+
+  if (warn) {
+    const icon = document.createElement("span");
+    icon.className = "event-warn";
+    icon.title = "Multiple Conversio events fired at the same time";
+    icon.textContent = "⚠";
+    node.querySelector("summary").insertBefore(icon, node.querySelector(".event-meta"));
+  }
 
   const body = node.querySelector(".event-body");
 
@@ -251,12 +259,22 @@ function renderGroup(group, groupIndex, isNewest) {
   header.append(caret, label, host, count);
   wrap.appendChild(header);
 
+  // Find timestamps where 2+ conversio_* events fired — marks double-fires.
+  const conversioTimes = group.events
+    .filter(ev => ev.type !== "datalayer" && ev.name && ev.name.startsWith("conversio_"))
+    .map(ev => ev.time);
+  const warnTimes = new Set(
+    conversioTimes.filter((t, i) => conversioTimes.indexOf(t) !== i)
+  );
+
   const body = document.createElement("div");
   body.className = "nav-group-events";
   for (const ev of group.events) {
+    const isNew = !knownTimes.has(ev.time);
+    const warn = warnTimes.has(ev.time) && ev.name && ev.name.startsWith("conversio_");
     const node = ev.type === "datalayer"
-      ? renderDLEvent(ev, !knownTimes.has(ev.time))
-      : renderEvent(ev, !knownTimes.has(ev.time));
+      ? renderDLEvent(ev, isNew)
+      : renderEvent(ev, isNew, warn);
     body.appendChild(node);
   }
   wrap.appendChild(body);
