@@ -6,6 +6,13 @@ const countEl = document.getElementById("event-count");
 const filterEl = document.getElementById("filter");
 const clearEl = document.getElementById("clear");
 const toggleDLEl = document.getElementById("toggle-dl");
+const filterParamEl = document.getElementById("filter-param");
+const experiencesBarEl = document.getElementById("experiences-bar");
+const storagePanelEl = document.getElementById("storage-panel");
+const storageBodyEl = document.getElementById("storage-body");
+const storageRefreshEl = document.getElementById("storage-refresh");
+const storageClearEl = document.getElementById("storage-clear");
+const toolsBodyEl = document.getElementById("tools-body");
 const rowTemplate = document.getElementById("event-row-template");
 
 let allEvents = [];
@@ -19,6 +26,237 @@ function timeLabel(ts) {
   const d = new Date(ts);
   return d.toLocaleTimeString([], { hour12: false }) +
     "." + String(d.getMilliseconds()).padStart(3, "0");
+}
+
+// ---- Conversio localStorage panel ------------------------------------
+
+const CONVERSIO_STORAGE_KEYS = ["conversio_experiences", "conversio_events"];
+const CONVERSIO_ALL_STORAGE_KEYS = ["conversio_events", "conversio_experiences"];
+
+async function readConversioStorage() {
+  if (!activeTabId) return null;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: activeTabId },
+      func: (keys) => {
+        const out = {};
+        for (const k of keys) {
+          try { out[k] = JSON.parse(sessionStorage.getItem(k)); } catch (e) { out[k] = null; }
+        }
+        return out;
+      },
+      args: [CONVERSIO_STORAGE_KEYS]
+    });
+    return results[0]?.result || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function clearConversioStorage() {
+  if (!activeTabId) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: activeTabId },
+      func: (keys) => { keys.forEach((k) => sessionStorage.removeItem(k)); },
+      args: [CONVERSIO_ALL_STORAGE_KEYS]
+    });
+  } catch (e) {}
+}
+
+async function refreshStoragePanel() {
+  const data = await readConversioStorage();
+  storageBodyEl.innerHTML = "";
+
+  if (!data) {
+    const msg = document.createElement("div");
+    msg.className = "storage-empty";
+    msg.textContent = "Could not read storage on this tab.";
+    storageBodyEl.appendChild(msg);
+    return;
+  }
+
+  for (const key of CONVERSIO_STORAGE_KEYS) {
+    const arr = data[key];
+    const collapsible = key === "conversio_events";
+    const showAsChips = key === "conversio_experiences";
+
+    if (collapsible) {
+      const details = document.createElement("details");
+      details.className = "storage-collapsible";
+      const summary = document.createElement("summary");
+      summary.className = "storage-row storage-row--summary";
+      const label = document.createElement("span");
+      label.className = "storage-key";
+      label.textContent = key + ":";
+      const count = document.createElement("span");
+      count.className = "storage-empty-val";
+      count.textContent = Array.isArray(arr) && arr.length ? `${arr.length} events` : "(not set)";
+      summary.append(label, count);
+      details.appendChild(summary);
+      if (Array.isArray(arr) && arr.length) {
+        const chips = document.createElement("div");
+        chips.className = "storage-chips storage-chips--indented";
+        for (const val of arr) {
+          const chip = document.createElement("span");
+          chip.className = "storage-chip";
+          chip.textContent = val;
+          chips.appendChild(chip);
+        }
+        details.appendChild(chips);
+      }
+      storageBodyEl.appendChild(details);
+    } else {
+      const row = document.createElement("div");
+      row.className = "storage-row";
+      const label = document.createElement("span");
+      label.className = "storage-key";
+      label.textContent = key + ":";
+      row.appendChild(label);
+      if (Array.isArray(arr) && arr.length) {
+        const chips = document.createElement("div");
+        chips.className = "storage-chips";
+        for (const val of arr) {
+          const chip = document.createElement("span");
+          chip.className = "storage-chip";
+          chip.textContent = val;
+          chips.appendChild(chip);
+        }
+        row.appendChild(chips);
+      } else {
+        const empty = document.createElement("span");
+        empty.className = "storage-empty-val";
+        empty.textContent = arr === null ? "(not set)" : "(empty)";
+        row.appendChild(empty);
+      }
+      storageBodyEl.appendChild(row);
+    }
+  }
+}
+
+function refreshExperiencesBar() {
+  const tabGA4 = activeTabId !== null
+    ? allEvents.filter((ev) => ev.tabId === activeTabId)
+    : allEvents;
+  const tabDL = activeTabId !== null
+    ? allDLEvents.filter((ev) => ev.tabId === activeTabId || ev.tabId === -1)
+    : allDLEvents;
+
+  // Conversio: collect all unique experience IDs from conversio_experiences param
+  const conversioExps = new Set();
+  for (const ev of tabGA4) {
+    const raw = ev.eventParams?.conversio_experiences || ev.allParams?.["ep.conversio_experiences"];
+    if (!raw) continue;
+    try {
+      const arr = typeof raw === "string" && raw.startsWith("[") ? JSON.parse(raw) : raw.split(",");
+      arr.forEach((e) => { const v = String(e).trim(); if (v) conversioExps.add(v); });
+    } catch (e) {}
+  }
+
+  // AB Tasty: collect campaign info from abtasty DL events
+  const abTastyTests = new Map();
+  for (const ev of tabDL) {
+    if (ev.name !== "abtasty") continue;
+    const p = ev.payload || {};
+    const id = p.campaignId || p.testId || p.id;
+    const name = p.campaignName || p.testName || p.name;
+    const variation = p.variationName || p.variationId || p.variationType;
+    if (id) abTastyTests.set(String(id), { name: name || String(id), variation });
+  }
+
+  experiencesBarEl.innerHTML = "";
+  const hasConversio = conversioExps.size > 0;
+  const hasABTasty = abTastyTests.size > 0;
+
+  if (!hasConversio && !hasABTasty) {
+    experiencesBarEl.style.display = "none";
+    return;
+  }
+
+  experiencesBarEl.style.display = "block";
+
+  if (hasConversio) {
+    const block = document.createElement("div");
+    block.className = "exp-block";
+    const label = document.createElement("span");
+    label.className = "exp-label";
+    label.textContent = "Conversio";
+    block.appendChild(label);
+    const chips = document.createElement("div");
+    chips.className = "exp-chips";
+    for (const id of conversioExps) {
+      const chip = document.createElement("span");
+      chip.className = "exp-chip exp-chip--conversio";
+      chip.textContent = id;
+      chips.appendChild(chip);
+    }
+    block.appendChild(chips);
+    experiencesBarEl.appendChild(block);
+  }
+
+  if (hasABTasty) {
+    const block = document.createElement("div");
+    block.className = "exp-block";
+    const label = document.createElement("span");
+    label.className = "exp-label";
+    label.textContent = "AB Tasty";
+    block.appendChild(label);
+    const chips = document.createElement("div");
+    chips.className = "exp-chips";
+    for (const [, test] of abTastyTests) {
+      const chip = document.createElement("span");
+      chip.className = "exp-chip exp-chip--abtasty";
+      chip.title = test.variation ? `Variation: ${test.variation}` : "";
+      chip.textContent = test.name;
+      chips.appendChild(chip);
+    }
+    block.appendChild(chips);
+    experiencesBarEl.appendChild(block);
+  }
+}
+
+async function refreshToolsPanel() {
+  const { detectedTools = {} } = await chrome.storage.session.get("detectedTools");
+  const tools = activeTabId !== null ? (detectedTools[activeTabId] || []) : [];
+  toolsBodyEl.innerHTML = "";
+  if (!tools.length) return;
+
+  const label = document.createElement("span");
+  label.className = "storage-key";
+  label.textContent = "detected tools:";
+  toolsBodyEl.appendChild(label);
+
+  const chips = document.createElement("div");
+  chips.className = "storage-chips";
+  for (const name of tools) {
+    const chip = document.createElement("span");
+    chip.className = "storage-chip storage-chip--tool";
+    chip.textContent = name;
+    chips.appendChild(chip);
+  }
+  toolsBodyEl.appendChild(chips);
+}
+
+storageRefreshEl.addEventListener("click", () => { refreshStoragePanel(); refreshToolsPanel(); });
+
+storageClearEl.addEventListener("click", async () => {
+  await clearConversioStorage();
+  if (activeTabId) chrome.tabs.reload(activeTabId);
+  await refreshStoragePanel();
+});
+
+// ---- Conversio event health check ------------------------------------
+
+const CONVERSIO_REQUIRED_PARAMS = [
+  "conversio_segment", "conversio_label", "conversio_category",
+  "conversio_action", "conversio_events"
+];
+
+function checkEventHealth(ev) {
+  if (!ev.name || !ev.name.startsWith("conversio_")) return null;
+  const params = ev.eventParams || {};
+  const missing = CONVERSIO_REQUIRED_PARAMS.filter((p) => !params[p]);
+  return { healthy: missing.length === 0, missing };
 }
 
 // Tracking params we strip from the group label — noise, not page state.
@@ -110,10 +348,29 @@ function renderEvent(ev, isNew, warn) {
     node.querySelector("summary").insertBefore(icon, node.querySelector(".event-meta"));
   }
 
+  const segment = ev.eventParams?.conversio_segment || "";
+  if (segment.endsWith("Q")) {
+    const badge = document.createElement("span");
+    badge.className = "trigger-badge";
+    badge.textContent = "TRIGGER";
+    node.querySelector("summary").insertBefore(badge, node.querySelector(".event-meta"));
+  }
+
+  const health = checkEventHealth(ev);
+  if (health) {
+    const badge = document.createElement("span");
+    badge.className = health.healthy ? "health-ok" : "health-fail";
+    badge.title = health.healthy
+      ? "All required Conversio parameters present"
+      : "Missing: " + health.missing.join(", ");
+    badge.textContent = health.healthy ? "✓" : "✗";
+    node.querySelector("summary").insertBefore(badge, node.querySelector(".event-meta"));
+  }
+
   const body = node.querySelector(".event-body");
 
   // Parameters (event params + user properties merged into one flat list)
-  const epEntries = Object.entries(ev.eventParams || {});
+  const epEntries = Object.entries(ev.eventParams || {}).filter(([k]) => k !== "conversio_events");
   const upEntries = Object.entries(ev.userProps || {});
   const allParamEntries = [...epEntries, ...upEntries];
 
@@ -127,6 +384,28 @@ function renderEvent(ev, isNew, warn) {
   for (const push of (ev.dataLayerPushes || [])) {
     const hasProps = Object.keys(push).filter(k => k !== "event").length > 0;
     if (hasProps) body.appendChild(dlSection(`dataLayer · ${push.event || "push"}`, push, ["event"]));
+  }
+
+  // Missing param warning
+  if (health && !health.healthy) {
+    const frag = document.createDocumentFragment();
+    const lab = document.createElement("div");
+    lab.className = "section-label section-label--missing";
+    lab.textContent = "Missing parameters";
+    frag.appendChild(lab);
+    for (const p of health.missing) {
+      const row = document.createElement("div");
+      row.className = "kv kv--missing";
+      const k = document.createElement("span");
+      k.className = "k";
+      k.textContent = p;
+      const v = document.createElement("span");
+      v.className = "v";
+      v.textContent = "not found";
+      row.append(k, v);
+      frag.appendChild(row);
+    }
+    body.appendChild(frag);
   }
 
   // Document info footer
@@ -323,12 +602,22 @@ function getMergedEvents() {
   return [...ga4, ...dl].sort((a, b) => b.time - a.time);
 }
 
+function eventMatchesParamFilter(ev, query) {
+  if (!query) return true;
+  const search = (obj) => obj && Object.values(obj).some((v) => String(v).toLowerCase().includes(query));
+  if (ev.type === "datalayer") {
+    return search(ev.payload);
+  }
+  return search(ev.eventParams) || search(ev.userProps) || search(ev.allParams);
+}
+
 function render() {
   const query = filterEl.value.trim().toLowerCase();
+  const paramQuery = filterParamEl.value.trim().toLowerCase();
   const tabEvents = getMergedEvents();
-  const visible = query
-    ? tabEvents.filter((ev) => ev.name.toLowerCase().includes(query))
-    : tabEvents;
+  const visible = tabEvents
+    .filter((ev) => !query || ev.name.toLowerCase().includes(query))
+    .filter((ev) => eventMatchesParamFilter(ev, paramQuery));
 
   countEl.textContent = String(tabEvents.length);
   listEl.querySelectorAll(".nav-group").forEach((n) => n.remove());
@@ -366,11 +655,25 @@ chrome.storage.session.onChanged.addListener((changes) => {
   if (changes.dlEvents) { allDLEvents = changes.dlEvents.newValue || []; changed = true; }
   if (changed) {
     render();
+    refreshExperiencesBar();
     if (pinned) listEl.scrollTop = 0;
   }
+  if (changes.detectedTools) refreshToolsPanel();
 });
 
+// Fallback poll — catches events missed when the service worker was suspended
+setInterval(async () => {
+  const { events = [], dlEvents = [] } = await chrome.storage.session.get(["events", "dlEvents"]);
+  const changed = events.length !== allEvents.length || dlEvents.length !== allDLEvents.length;
+  if (changed) {
+    allEvents = events;
+    allDLEvents = dlEvents;
+    render();
+  }
+}, 750);
+
 filterEl.addEventListener("input", render);
+filterParamEl.addEventListener("input", render);
 
 clearEl.addEventListener("click", () => {
   chrome.runtime.sendMessage({ type: "clear-events" });
@@ -405,10 +708,12 @@ async function initActiveTab() {
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   activeTabId = tabId;
-  // Clear group state — different tab, different set of groups.
   groupOpenState.clear();
   render();
+  refreshStoragePanel();
+  refreshToolsPanel();
+  refreshExperiencesBar();
 });
 
 toggleDLEl.classList.add("active");
-initActiveTab().then(() => load(true));
+initActiveTab().then(() => { load(true); refreshStoragePanel(); refreshToolsPanel(); refreshExperiencesBar(); });

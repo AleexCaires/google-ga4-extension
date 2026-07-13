@@ -16,7 +16,22 @@
       <button id="toggle-dl" title="Show dataLayer pushes">DL</button>
       <button id="clear" title="Clear all captured events">Clear</button>
     </div>
+    <div class="controls controls--param">
+      <input type="search" id="filter-param" placeholder="Filter by parameter value…" autocomplete="off" />
+    </div>
   </header>
+
+  <div id="experiences-bar" class="experiences-bar" style="display:none"></div>
+
+  <div id="storage-panel" class="storage-panel">
+    <div class="storage-header">
+      <span class="storage-title">Conversio Storage</span>
+      <button id="storage-refresh" title="Refresh storage">↺</button>
+      <button id="storage-clear" title="Clear Conversio storage">Clear</button>
+    </div>
+    <div id="storage-body" class="storage-body"></div>
+    <div id="tools-body" class="storage-row" style="margin-top:6px;flex-wrap:wrap;"></div>
+  </div>
 
   <main id="event-list">
     <div class="empty" id="empty-state">

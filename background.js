@@ -16,6 +16,72 @@ const URL_FILTERS = [
   "*://*.googletagmanager.com/g/collect*"
 ];
 
+// ---- A/B tool detection -----------------------------------------------
+
+const AB_TOOLS = [
+  { name: "AB Tasty",                  pattern: "*://*.abtasty.com/*" },
+  { name: "Dynamic Yield",             pattern: "*://*.dynamicyield.com/*" },
+  { name: "Optimizely",                pattern: "*://*.optimizely.com/*" },
+  { name: "VWO",                       pattern: "*://*.vwo.com/*" },
+  { name: "VWO",                       pattern: "*://*.wingify.com/*" },
+  { name: "Kameleoon",                 pattern: "*://*.kameleoon.com/*" },
+  { name: "Kameleoon",                 pattern: "*://*.kameleoon.eu/*" },
+  { name: "Adobe Target",              pattern: "*://*.tt.omtrdc.net/*" },
+  { name: "Convert",                   pattern: "*://*.convert.com/*" },
+  { name: "Qubit",                     pattern: "*://*.qubit.com/*" },
+  { name: "Monetate",                  pattern: "*://*.monetate.com/*" },
+  { name: "Salesforce Personalization",pattern: "*://*.evergage.com/*" },
+  { name: "Split.io",                  pattern: "*://*.split.io/*" },
+  { name: "LaunchDarkly",              pattern: "*://*.launchdarkly.com/*" },
+  { name: "Statsig",                   pattern: "*://*.statsig.com/*" },
+  { name: "Eppo",                      pattern: "*://*.geteppo.com/*" },
+  { name: "Unbounce",                  pattern: "*://*.unbounce.com/*" },
+];
+
+// Map from URL pattern → tool name for fast lookup in the listener
+const AB_PATTERN_MAP = {};
+const AB_URL_PATTERNS = [];
+for (const tool of AB_TOOLS) {
+  if (!AB_URL_PATTERNS.includes(tool.pattern)) AB_URL_PATTERNS.push(tool.pattern);
+  AB_PATTERN_MAP[tool.pattern] = tool.name;
+}
+
+function detectToolFromUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    for (const tool of AB_TOOLS) {
+      const domain = tool.pattern.replace("*://", "").replace("/*", "").replace("*.", "");
+      if (host === domain || host.endsWith("." + domain)) return tool.name;
+    }
+  } catch (e) {}
+  return null;
+}
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    const tool = detectToolFromUrl(details.url);
+    if (!tool || !details.tabId || details.tabId < 0) return;
+    chrome.storage.session.get("detectedTools").then(({ detectedTools = {} }) => {
+      const tabTools = new Set(detectedTools[details.tabId] || []);
+      if (tabTools.has(tool)) return;
+      tabTools.add(tool);
+      detectedTools[details.tabId] = [...tabTools];
+      chrome.storage.session.set({ detectedTools });
+    });
+  },
+  { urls: AB_URL_PATTERNS }
+);
+
+// Clear detected tools for a tab when it navigates
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== "loading") return;
+  chrome.storage.session.get("detectedTools").then(({ detectedTools = {} }) => {
+    if (!detectedTools[tabId]) return;
+    delete detectedTools[tabId];
+    chrome.storage.session.set({ detectedTools });
+  });
+});
+
 // ---- helpers ----------------------------------------------------------
 
 function paramsToObject(searchParams) {
