@@ -41,7 +41,10 @@ async function readConversioStorage() {
       func: (keys) => {
         const out = {};
         for (const k of keys) {
-          try { out[k] = JSON.parse(sessionStorage.getItem(k)); } catch (e) { out[k] = null; }
+          try {
+            const val = sessionStorage.getItem(k) ?? localStorage.getItem(k);
+            out[k] = val !== null ? JSON.parse(val) : null;
+          } catch (e) { out[k] = null; }
         }
         return out;
       },
@@ -55,12 +58,25 @@ async function readConversioStorage() {
 
 async function clearConversioStorage() {
   if (!activeTabId) return;
+
+  // Clear sessionStorage + localStorage via injected script
   try {
     await chrome.scripting.executeScript({
       target: { tabId: activeTabId },
-      func: (keys) => { keys.forEach((k) => sessionStorage.removeItem(k)); },
+      func: (keys) => { keys.forEach((k) => { sessionStorage.removeItem(k); localStorage.removeItem(k); }); },
       args: [CONVERSIO_ALL_STORAGE_KEYS]
     });
+  } catch (e) {}
+
+  // Clear ALL cookies on the tab's domain using the cookies API
+  try {
+    const tab = await chrome.tabs.get(activeTabId);
+    const url = new URL(tab.url);
+    const allCookies = await chrome.cookies.getAll({ domain: url.hostname });
+    for (const cookie of allCookies) {
+      const cookieUrl = (cookie.secure ? "https" : "http") + "://" + cookie.domain.replace(/^\./, "") + cookie.path;
+      await chrome.cookies.remove({ url: cookieUrl, name: cookie.name });
+    }
   } catch (e) {}
 }
 
@@ -240,8 +256,23 @@ async function refreshToolsPanel() {
 storageRefreshEl.addEventListener("click", () => { refreshStoragePanel(); refreshToolsPanel(); });
 
 storageClearEl.addEventListener("click", async () => {
+  chrome.runtime.sendMessage({ type: "clear-events" });
+  await chrome.storage.session.set({ events: [], dlEvents: [], unseen: 0 });
+  allEvents = [];
+  allDLEvents = [];
+  _lastStorageSnapshot = "";
+  knownTimes = new Set();
+  groupOpenState.clear();
+  render();
+  refreshExperiencesBar();
   await clearConversioStorage();
-  if (activeTabId) chrome.tabs.reload(activeTabId);
+  if (activeTabId) {
+    chrome.scripting.executeScript({
+      target: { tabId: activeTabId },
+      func: () => console.clear()
+    }).catch(() => {});
+    chrome.tabs.reload(activeTabId);
+  }
   await refreshStoragePanel();
 });
 
@@ -249,7 +280,7 @@ storageClearEl.addEventListener("click", async () => {
 
 const CONVERSIO_REQUIRED_PARAMS = [
   "conversio_segment", "conversio_label", "conversio_category",
-  "conversio_action", "conversio_events"
+  "conversio_action"
 ];
 
 function checkEventHealth(ev) {
@@ -353,6 +384,11 @@ function renderEvent(ev, isNew, warn) {
     const badge = document.createElement("span");
     badge.className = "trigger-badge";
     badge.textContent = "TRIGGER";
+    node.querySelector("summary").insertBefore(badge, node.querySelector(".event-meta"));
+  } else if (/\.X(CO|V\d)/i.test(segment)) {
+    const badge = document.createElement("span");
+    badge.className = "exp-badge";
+    badge.textContent = "EXPERIENCE";
     node.querySelector("summary").insertBefore(badge, node.querySelector(".event-meta"));
   }
 
@@ -509,18 +545,46 @@ function renderDLEvent(ev, isNew) {
   return node;
 }
 
-// Split events into navigation groups. A new group starts on every
-// page_view event (real page load / SPA navigation / refresh). Walking
-// oldest-first keeps same-page events together; we reverse at the end
-// for newest-group-first display.
+// Split events into navigation groups. A new group starts when the page
+// URL (host + path) changes, or on a repeat page_view for the same URL
+// (reload). Comparing URLs matters because dataLayer pushes on a new page
+// fire before the GA4 page_view hit — waiting for page_view would leak
+// those early events into the previous page's group. Query-only changes
+// (e.g. Shopify ?variant=) don't split. Walking oldest-first keeps
+// same-page events together; we reverse at the end for newest-first display.
+function pageKey(loc) {
+  if (!loc) return "";
+  try {
+    const u = new URL(loc);
+    return u.host + u.pathname;
+  } catch (e) {
+    return loc;
+  }
+}
+
 function groupByNavigation(events) {
   const groups = [];
   let current = null;
+  let currentKey = "";
+  let currentHasPV = false;
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
-    if (!current || ev.name === "page_view") {
+    const key = pageKey(ev.pageLocation);
+    const navigated = key && currentKey && key !== currentKey;
+    const reloaded = ev.name === "page_view" && currentHasPV;
+    if (!current || navigated || reloaded) {
       current = { location: ev.pageLocation || "", events: [] };
       groups.push(current);
+      currentKey = key;
+      currentHasPV = ev.name === "page_view";
+    } else {
+      // Backfill location/key if the group started from an event
+      // that had no page URL of its own.
+      if (!currentKey && key) {
+        currentKey = key;
+        if (!current.location) current.location = ev.pageLocation || "";
+      }
+      if (ev.name === "page_view") currentHasPV = true;
     }
     current.events.push(ev);
   }
@@ -565,12 +629,15 @@ function renderGroup(group, groupIndex, isNewest) {
   header.append(caret, label, host, count);
   wrap.appendChild(header);
 
-  // Find timestamps where 2+ conversio_* events fired — marks double-fires.
-  const conversioTimes = group.events
-    .filter(ev => ev.type !== "datalayer" && ev.name && ev.name.startsWith("conversio_"))
-    .map(ev => ev.time);
-  const warnTimes = new Set(
-    conversioTimes.filter((t, i) => conversioTimes.indexOf(t) !== i)
+  // Flag true double-fires: the SAME conversio segment sent 2+ times at
+  // the same timestamp. Different segments sharing a timestamp are fine —
+  // that's one interaction matching several tracking conditions, batched
+  // by GA4 into one request.
+  const isConversio = (ev) => ev.type !== "datalayer" && ev.name && ev.name.startsWith("conversio_");
+  const dupSig = (ev) => `${ev.time}|${ev.eventParams?.conversio_segment || ""}|${ev.eventParams?.conversio_label || ""}`;
+  const conversioSigs = group.events.filter(isConversio).map(dupSig);
+  const warnSigs = new Set(
+    conversioSigs.filter((s, i) => conversioSigs.indexOf(s) !== i)
   );
 
   const body = document.createElement("div");
@@ -578,7 +645,7 @@ function renderGroup(group, groupIndex, isNewest) {
   for (const ev of group.events) {
     try {
       const isNew = !knownTimes.has(ev.time);
-      const warn = warnTimes.has(ev.time) && ev.name && ev.name.startsWith("conversio_");
+      const warn = isConversio(ev) && warnSigs.has(dupSig(ev));
       const node = ev.type === "datalayer"
         ? renderDLEvent(ev, isNew)
         : renderEvent(ev, isNew, warn);
@@ -662,25 +729,49 @@ chrome.storage.session.onChanged.addListener((changes) => {
 });
 
 // Fallback poll — catches events missed when the service worker was suspended
+let _lastStorageSnapshot = "";
 setInterval(async () => {
   const { events = [], dlEvents = [] } = await chrome.storage.session.get(["events", "dlEvents"]);
-  const changed = events.length !== allEvents.length || dlEvents.length !== allDLEvents.length;
+  const changed =
+    events.length !== allEvents.length ||
+    dlEvents.length !== allDLEvents.length ||
+    (events[0] && allEvents[0] && events[0].time !== allEvents[0].time) ||
+    (dlEvents[0] && allDLEvents[0] && dlEvents[0].time !== allDLEvents[0].time);
   if (changed) {
     allEvents = events;
     allDLEvents = dlEvents;
     render();
+    refreshExperiencesBar();
+  }
+  // Read sessionStorage on every tick and only re-render if values changed
+  const storageData = await readConversioStorage();
+  const snapshot = JSON.stringify(storageData);
+  if (snapshot !== _lastStorageSnapshot) {
+    _lastStorageSnapshot = snapshot;
+    refreshStoragePanel();
+    refreshExperiencesBar();
   }
 }, 750);
 
 filterEl.addEventListener("input", render);
 filterParamEl.addEventListener("input", render);
 
-clearEl.addEventListener("click", () => {
+clearEl.addEventListener("click", async () => {
   chrome.runtime.sendMessage({ type: "clear-events" });
+  await chrome.storage.session.set({ events: [], dlEvents: [], unseen: 0 });
   allEvents = [];
   allDLEvents = [];
+  _lastStorageSnapshot = "";
   knownTimes = new Set();
+  groupOpenState.clear();
   render();
+  refreshExperiencesBar();
+  if (activeTabId) {
+    chrome.scripting.executeScript({
+      target: { tabId: activeTabId },
+      func: () => console.clear()
+    }).catch(() => {});
+  }
 });
 
 toggleDLEl.addEventListener("click", () => {
@@ -712,6 +803,14 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   render();
   refreshStoragePanel();
   refreshToolsPanel();
+  refreshExperiencesBar();
+});
+
+// Re-read storage after the page finishes loading so we catch values
+// written by page scripts during page load (e.g. Conversio sessionStorage).
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (tabId !== activeTabId || changeInfo.status !== "complete") return;
+  refreshStoragePanel();
   refreshExperiencesBar();
 });
 

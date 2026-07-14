@@ -485,6 +485,19 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 }
 
 /* Health check indicators */
+.exp-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  background: rgba(90, 176, 247, 0.1);
+  border: 1px solid rgba(90, 176, 247, 0.35);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
 .trigger-badge {
   font-family: var(--mono);
   font-size: 9px;

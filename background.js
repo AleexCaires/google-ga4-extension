@@ -211,8 +211,62 @@ function flattenObject(obj, prefix) {
 
 let panelOpen = false; // tracked via a long-lived port from the side panel
 
+function logEvent(ev) {
+  if (ev.name === "conversio_cro") {
+    console.log(
+      "%c conversio_cro %c " + (ev.eventParams?.conversio_segment || "") + " ",
+      "background:#ff69b4;color:#fff;font-weight:700;border-radius:3px 0 0 3px;padding:1px 4px",
+      "background:#ffb6c1;color:#7d0038;font-weight:600;border-radius:0 3px 3px 0;padding:1px 4px",
+      ev.eventParams
+    );
+  } else {
+    console.log(
+      "%c " + ev.name + " ",
+      "background:#1d2026;color:#56c98d;font-weight:600;border-radius:3px;padding:1px 4px",
+      ev.eventParams
+    );
+  }
+}
+
+// Dedup: track recently recorded event signatures to avoid double-counting
+// hits captured by both webRequest and the page fetch hook.
+const recentEventSigs = new Map();
+
+// Incremented on every Clear so in-flight recordEvents calls can detect a
+// clear that happened while they were awaiting storage and bail out.
+let clearGeneration = 0;
+// The signature covers the full parameter set — GA4's _s hit counter
+// differs on every real hit, so two distinct events with the same name
+// never collide; only the exact same hit captured twice is dropped.
+function isDuplicate(ev) {
+  const sig = `${ev.tabId}|${ev.name}|${JSON.stringify(ev.allParams)}`;
+  const last = recentEventSigs.get(sig);
+  const now = Date.now();
+  if (last && now - last < 2000) return true;
+  recentEventSigs.set(sig, now);
+  if (recentEventSigs.size > 200) {
+    const oldest = recentEventSigs.keys().next().value;
+    recentEventSigs.delete(oldest);
+  }
+  return false;
+}
+
+// All storage read-modify-writes are serialized through this queue.
+// Without it, two events arriving close together both read the same
+// stored list and the second write clobbers the first — events would
+// appear in the panel and then vanish.
+let writeChain = Promise.resolve();
+function queueWrite(fn) {
+  writeChain = writeChain.then(fn).catch((e) => console.warn("DataSpy write error:", e));
+  return writeChain;
+}
+
 async function recordEvents(newEvents) {
   if (!newEvents.length) return;
+  newEvents = newEvents.filter(ev => !isDuplicate(ev));
+  if (!newEvents.length) return;
+  const capturedGen = clearGeneration;
+  newEvents.forEach(logEvent);
 
   // Attach any matching dataLayer pushes to each GA4 event.
   // A push matches if it fired within 1 second before the GA4 hit
@@ -228,13 +282,18 @@ async function recordEvents(newEvents) {
     }
   }
 
-  const { events = [], unseen = 0 } = await chrome.storage.session.get(["events", "unseen"]);
-  const updated = [...newEvents.reverse(), ...events].slice(0, MAX_EVENTS);
-  // While the panel is open the user is watching live — no unseen counter
-  const unseenCount = panelOpen ? 0 : unseen + newEvents.length;
-  await chrome.storage.session.set({ events: updated, unseen: unseenCount });
-  await chrome.action.setBadgeText({
-    text: unseenCount === 0 ? "" : unseenCount > 99 ? "99+" : String(unseenCount)
+  return queueWrite(async () => {
+    // If a Clear happened while these events were in flight, discard them.
+    if (capturedGen !== clearGeneration) return;
+    const { events = [], unseen = 0 } = await chrome.storage.session.get(["events", "unseen"]);
+    if (capturedGen !== clearGeneration) return;
+    const updated = [...newEvents.reverse(), ...events].slice(0, MAX_EVENTS);
+    // While the panel is open the user is watching live — no unseen counter
+    const unseenCount = panelOpen ? 0 : unseen + newEvents.length;
+    await chrome.storage.session.set({ events: updated, unseen: unseenCount });
+    await chrome.action.setBadgeText({
+      text: unseenCount === 0 ? "" : unseenCount > 99 ? "99+" : String(unseenCount)
+    });
   });
 }
 
@@ -262,9 +321,32 @@ chrome.runtime.onConnect.addListener((port) => {
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (!msg) return;
   if (msg.type === "clear-events") {
-    chrome.storage.session.set({ events: [], dlEvents: [], unseen: 0 });
-    chrome.action.setBadgeText({ text: "" });
+    clearGeneration++;
     recentDLPushes.length = 0;
+    recentEventSigs.clear();
+    queueWrite(() => chrome.storage.session.set({ events: [], dlEvents: [], unseen: 0 }));
+    chrome.action.setBadgeText({ text: "" });
+  }
+  if (msg.type === "ga4-hit" && msg.url) {
+    try {
+      const tabId = sender && sender.tab ? sender.tab.id : -1;
+      const fakeDetails = {
+        url: msg.url,
+        tabId,
+        initiator: "",
+        method: "POST",
+        requestBody: { raw: [{ bytes: new TextEncoder().encode(msg.body || "").buffer }] }
+      };
+      const events = extractEvents(fakeDetails);
+      if (events.length) {
+        // Stamp the correct time from the page
+        const ts = msg.time || Date.now();
+        events.forEach(ev => { ev.time = ts; ev.fromPage = true; });
+        recordEvents(events);
+      }
+    } catch (e) {
+      console.warn("GA4 Event Spy page-hit parse error:", e);
+    }
   }
   if (msg.type === "datalayer-push" && msg.payload) {
     const eventName = msg.payload.event || "";
@@ -285,9 +367,13 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       time: ts,
       tabId
     };
-    chrome.storage.session.get("dlEvents").then(({ dlEvents = [] }) => {
+    const capturedGenDL = clearGeneration;
+    queueWrite(async () => {
+      if (capturedGenDL !== clearGeneration) return;
+      const { dlEvents = [] } = await chrome.storage.session.get("dlEvents");
+      if (capturedGenDL !== clearGeneration) return;
       const updated = [dlEvent, ...dlEvents].slice(0, MAX_DL_EVENTS);
-      chrome.storage.session.set({ dlEvents: updated });
+      await chrome.storage.session.set({ dlEvents: updated });
     });
   }
 });
