@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Conversio DataSpy",
-  "version": "1.8.0",
+  "version": "1.11.0",
   "description": "Watches outgoing GA4 hits and shows every event as it fires, with parameters and dataLayer context.",
-  "permissions": ["webRequest", "storage", "sidePanel", "tabs", "scripting", "cookies"],
+  "permissions": ["webRequest", "storage", "sidePanel", "tabs", "scripting", "cookies", "declarativeNetRequest"],
   "host_permissions": [
     "*://*/*"
   ],

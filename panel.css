@@ -305,6 +305,14 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
   word-break: break-all;
 }
 
+/* Emission metadata (conversio_id / conversio_vitals) sits below a divider
+   so it reads as separate from the event's own parameters. */
+.event-body .section-label--meta {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
 .section-label--dl {
   color: var(--amber);
   margin-top: 10px;
@@ -418,6 +426,22 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
   margin-bottom: 6px;
 }
 
+/* Cap the storage list so a long experience/event list scrolls inside itself
+   instead of pushing the event feed off screen. */
+.storage-body {
+  max-height: min(200px, 30vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.storage-body::-webkit-scrollbar { width: 8px; }
+.storage-body::-webkit-scrollbar-track { background: transparent; }
+.storage-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+.storage-body::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
 .storage-title {
   font-family: var(--mono);
   font-size: 10px;
@@ -482,6 +506,62 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
   color: var(--amber);
   border-color: rgba(227, 179, 65, 0.35);
   background: rgba(227, 179, 65, 0.08);
+}
+
+/* Shown when a block toggle can't take effect, so the click isn't a no-op. */
+.tool-block-error {
+  flex-basis: 100%;
+  margin-top: 5px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #e05c5c;
+}
+
+/* Tool name chip and its block toggle, side by side. */
+.tool-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Block toggle sits beside the tool chip and is the primary state indicator:
+   green while the tool is allowed to run, red once it's blocked. Sized up so
+   it reads at a glance rather than looking like part of the chip's text. */
+.tool-block {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  color: var(--green);
+  font-size: 19px;
+  line-height: 1;
+  font-family: var(--mono);
+  transition: color 0.12s ease;
+}
+
+.tool-block:hover { color: #7fe0ac; }
+.tool-block:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.tool-block.is-blocked { color: #e05c5c; }
+.tool-block.is-blocked:hover { color: #f07070; }
+
+/* The icon carries the blocked state, so the chip keeps its normal colours —
+   only the strikethrough marks the tool as blocked. */
+.storage-chip--tool.is-blocked {
+  text-decoration: line-through;
+}
+
+.storage-chip--true {
+  color: var(--green);
+  border-color: rgba(86, 201, 141, 0.35);
+  background: rgba(86, 201, 141, 0.08);
+}
+
+.storage-chip--false {
+  color: #e05c5c;
+  border-color: rgba(224, 92, 92, 0.35);
+  background: rgba(224, 92, 92, 0.08);
 }
 
 /* Health check indicators */

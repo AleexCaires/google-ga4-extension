@@ -46,6 +46,71 @@ for (const tool of AB_TOOLS) {
   AB_PATTERN_MAP[tool.pattern] = tool.name;
 }
 
+// ---- tool blocking (declarativeNetRequest) -----------------------------
+//
+// MV3 can't block with chrome.webRequest (webRequestBlocking is policy-only),
+// so blocking runs on declarativeNetRequest SESSION rules. Session rules are
+// the right fit twice over: they support a tabIds condition, so a block only
+// affects the tab being debugged rather than the whole browser, and they
+// disappear when Chrome closes so no rule can outlive a debugging session.
+
+// tool name -> domains it serves from, derived from the AB_TOOLS patterns
+const TOOL_DOMAINS = {};
+for (const tool of AB_TOOLS) {
+  const domain = tool.pattern.replace("*://", "").replace("/*", "").replace("*.", "");
+  if (!TOOL_DOMAINS[tool.name]) TOOL_DOMAINS[tool.name] = [];
+  if (!TOOL_DOMAINS[tool.name].includes(domain)) TOOL_DOMAINS[tool.name].push(domain);
+}
+
+// Everything a testing tool might pull in. main_frame is left out on purpose
+// so navigation can't be broken.
+const BLOCK_RESOURCE_TYPES = [
+  "script", "xmlhttprequest", "sub_frame", "image", "stylesheet",
+  "font", "media", "ping", "websocket", "other"
+];
+
+// Rebuild every session rule from the stored blocked state. Cheaper to
+// reason about than diffing, and the rule count here is tiny.
+async function syncBlockRules() {
+  // Missing after a manifest permission change until the extension is fully
+  // reloaded (and Chrome sometimes disables unpacked extensions until then).
+  if (!chrome.declarativeNetRequest) {
+    throw new Error("declarativeNetRequest unavailable — reload the extension at chrome://extensions");
+  }
+  const { blockedTools = {} } = await chrome.storage.session.get("blockedTools");
+  const rules = [];
+  let id = 1;
+  for (const [tabIdStr, names] of Object.entries(blockedTools)) {
+    const tabId = Number(tabIdStr);
+    if (!Number.isInteger(tabId) || tabId < 0) continue;
+    for (const name of names) {
+      const domains = TOOL_DOMAINS[name];
+      if (!domains || !domains.length) continue;
+      rules.push({
+        id: id++,
+        priority: 1,
+        action: { type: "block" },
+        condition: { requestDomains: domains, tabIds: [tabId], resourceTypes: BLOCK_RESOURCE_TYPES }
+      });
+    }
+  }
+  const existing = await chrome.declarativeNetRequest.getSessionRules();
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: existing.map((r) => r.id),
+    addRules: rules
+  });
+  return rules.length;
+}
+
+// A closed tab's rules are dead weight, and its id can be reused by Chrome.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.get("blockedTools").then(({ blockedTools = {} }) => {
+    if (!blockedTools[tabId]) return;
+    delete blockedTools[tabId];
+    chrome.storage.session.set({ blockedTools }).then(syncBlockRules);
+  });
+});
+
 function detectToolFromUrl(url) {
   try {
     const host = new URL(url).hostname;
@@ -318,8 +383,31 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
+  // Async branch: reply once the rules are actually in place, so the panel
+  // only reloads the tab after blocking is live.
+  if (msg.type === "set-tool-block") {
+    (async () => {
+      try {
+        const tabId = Number(msg.tabId);
+        if (!Number.isInteger(tabId) || tabId < 0) return { ok: false, error: "bad tabId" };
+        const { blockedTools = {} } = await chrome.storage.session.get("blockedTools");
+        const set = new Set(blockedTools[tabId] || []);
+        if (msg.blocked) set.add(msg.tool);
+        else set.delete(msg.tool);
+        if (set.size) blockedTools[tabId] = [...set];
+        else delete blockedTools[tabId];
+        await chrome.storage.session.set({ blockedTools });
+        const ruleCount = await syncBlockRules();
+        return { ok: true, blocked: [...set], ruleCount };
+      } catch (e) {
+        console.warn("DataSpy block rule error:", e);
+        return { ok: false, error: String(e) };
+      }
+    })().then(sendResponse);
+    return true;
+  }
   if (msg.type === "clear-events") {
     clearGeneration++;
     recentDLPushes.length = 0;

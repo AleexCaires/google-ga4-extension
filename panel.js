@@ -10,7 +10,6 @@ const filterParamEl = document.getElementById("filter-param");
 const experiencesBarEl = document.getElementById("experiences-bar");
 const storagePanelEl = document.getElementById("storage-panel");
 const storageBodyEl = document.getElementById("storage-body");
-const storageRefreshEl = document.getElementById("storage-refresh");
 const storageClearEl = document.getElementById("storage-clear");
 const toolsBodyEl = document.getElementById("tools-body");
 const rowTemplate = document.getElementById("event-row-template");
@@ -19,6 +18,31 @@ let allEvents = [];
 let allDLEvents = [];
 let knownTimes = new Set();
 const groupOpenState = new Map();
+// Which individual events the user has expanded. render() rebuilds the whole
+// list, so without this an incoming event would collapse whatever you were
+// reading. Keyed on identity that survives a re-render.
+const eventOpenState = new Set();
+
+function eventKey(ev) {
+  const kind = ev.type === "datalayer" ? "dl" : "ga4";
+  const seg = ev.eventParams?.conversio_segment || "";
+  return `${kind}|${ev.time}|${ev.name}|${seg}`;
+}
+
+// Wire an event row so expanding/collapsing it is remembered across renders.
+function trackOpenState(details, ev) {
+  const key = eventKey(ev);
+  if (eventOpenState.has(key)) details.open = true;
+  details.addEventListener("toggle", () => {
+    if (!details.open) { eventOpenState.delete(key); return; }
+    eventOpenState.add(key);
+    // Keys outlive the events they point at (the feed caps at 300), so drop
+    // the oldest entries rather than growing forever.
+    while (eventOpenState.size > 400) {
+      eventOpenState.delete(eventOpenState.values().next().value);
+    }
+  });
+}
 let activeTabId = null;
 let showDL = true;
 
@@ -30,8 +54,34 @@ function timeLabel(ts) {
 
 // ---- Conversio localStorage panel ------------------------------------
 
-const CONVERSIO_STORAGE_KEYS = ["conversio_experiences", "conversio_events"];
-const CONVERSIO_ALL_STORAGE_KEYS = ["conversio_events", "conversio_experiences"];
+// Keys the current Conversio script writes.
+const CONVERSIO_STORAGE_KEYS = [
+  "conversioExperienceList",
+  "conversioEventList",
+  "conversioExperienceFired",
+  "conversioExperienceMap",
+  "conversio_vitals",
+  "conversioVitalsPending",
+  "conversioEmissionEnabled",
+];
+
+// Earlier key names. Still read so older sites keep working, but only shown
+// when actually present — otherwise they'd sit there as permanent "(not set)".
+const CONVERSIO_LEGACY_KEYS = ["conversio_experiences", "conversio_events"];
+
+// Rows worth collapsing. conversioExperienceFired just restates
+// conversioExperienceList directly above it, and the experience map is verbose.
+const CONVERSIO_COLLAPSIBLE_KEYS = new Set([
+  "conversioExperienceFired",
+  "conversioExperienceMap",
+  "conversio_events",
+]);
+
+// Kept expanded regardless of length — the fired events are the main thing
+// you're watching, and the panel scrolls now if the list gets long.
+const CONVERSIO_ALWAYS_EXPANDED_KEYS = new Set(["conversioEventList"]);
+
+const CONVERSIO_ALL_STORAGE_KEYS = [...CONVERSIO_STORAGE_KEYS, ...CONVERSIO_LEGACY_KEYS];
 
 async function readConversioStorage() {
   if (!activeTabId) return null;
@@ -43,12 +93,14 @@ async function readConversioStorage() {
         for (const k of keys) {
           try {
             const val = sessionStorage.getItem(k) ?? localStorage.getItem(k);
-            out[k] = val !== null ? JSON.parse(val) : null;
+            if (val === null) { out[k] = null; continue; }
+            // Not everything stored is JSON (e.g. bare "true") — keep raw string
+            try { out[k] = JSON.parse(val); } catch (e) { out[k] = val; }
           } catch (e) { out[k] = null; }
         }
         return out;
       },
-      args: [CONVERSIO_STORAGE_KEYS]
+      args: [CONVERSIO_ALL_STORAGE_KEYS]
     });
     return results[0]?.result || null;
   } catch (e) {
@@ -92,10 +144,17 @@ async function refreshStoragePanel() {
     return;
   }
 
-  for (const key of CONVERSIO_STORAGE_KEYS) {
-    const arr = data[key];
-    const collapsible = key === "conversio_events";
-    const showAsChips = key === "conversio_experiences";
+  // Legacy keys only earn a row when the page actually still writes them.
+  const keys = [
+    ...CONVERSIO_STORAGE_KEYS,
+    ...CONVERSIO_LEGACY_KEYS.filter((k) => data[k] !== null && data[k] !== undefined),
+  ];
+
+  for (const key of keys) {
+    const val = data[key];
+    const count = valueCount(val);
+    const collapsible = !CONVERSIO_ALWAYS_EXPANDED_KEYS.has(key)
+      && (CONVERSIO_COLLAPSIBLE_KEYS.has(key) || count > 6);
 
     if (collapsible) {
       const details = document.createElement("details");
@@ -105,21 +164,20 @@ async function refreshStoragePanel() {
       const label = document.createElement("span");
       label.className = "storage-key";
       label.textContent = key + ":";
-      const count = document.createElement("span");
-      count.className = "storage-empty-val";
-      count.textContent = Array.isArray(arr) && arr.length ? `${arr.length} events` : "(not set)";
-      summary.append(label, count);
+      const meta = document.createElement("span");
+      meta.className = "storage-empty-val";
+      meta.textContent = count === null ? "(not set)"
+        : count === 0 ? "(empty)"
+        : `${count} ${count === 1 ? "item" : "items"}`;
+      summary.append(label, meta);
       details.appendChild(summary);
-      if (Array.isArray(arr) && arr.length) {
-        const chips = document.createElement("div");
-        chips.className = "storage-chips storage-chips--indented";
-        for (const val of arr) {
-          const chip = document.createElement("span");
-          chip.className = "storage-chip";
-          chip.textContent = val;
-          chips.appendChild(chip);
-        }
-        details.appendChild(chips);
+      if (count) {
+        const inner = document.createElement("div");
+        inner.className = "storage-chips--indented";
+        // Nested objects (e.g. conversioExperienceMap) read far better as a
+        // tree than as one long stringified chip.
+        inner.appendChild(isNested(val) ? renderDLTree(val) : storageValueNode(val));
+        details.appendChild(inner);
       }
       storageBodyEl.appendChild(details);
     } else {
@@ -129,25 +187,64 @@ async function refreshStoragePanel() {
       label.className = "storage-key";
       label.textContent = key + ":";
       row.appendChild(label);
-      if (Array.isArray(arr) && arr.length) {
-        const chips = document.createElement("div");
-        chips.className = "storage-chips";
-        for (const val of arr) {
-          const chip = document.createElement("span");
-          chip.className = "storage-chip";
-          chip.textContent = val;
-          chips.appendChild(chip);
-        }
-        row.appendChild(chips);
-      } else {
-        const empty = document.createElement("span");
-        empty.className = "storage-empty-val";
-        empty.textContent = arr === null ? "(not set)" : "(empty)";
-        row.appendChild(empty);
-      }
+      row.appendChild(storageValueNode(val));
       storageBodyEl.appendChild(row);
     }
   }
+}
+
+// Number of entries in a stored value, or null when it isn't set.
+function valueCount(val) {
+  if (val === null || val === undefined) return null;
+  if (Array.isArray(val)) return val.length;
+  if (typeof val === "object") return Object.keys(val).length;
+  return 1;
+}
+
+// True when an object holds at least one object/array value.
+function isNested(val) {
+  if (!val || typeof val !== "object" || Array.isArray(val)) return false;
+  return Object.values(val).some((v) => v !== null && typeof v === "object");
+}
+
+// Render any storage value: arrays become one chip per item, objects one
+// "key: value" chip per entry (keys are dynamic — whatever is stored),
+// booleans a colour-coded chip, other scalars a plain chip.
+function storageValueNode(val) {
+  const emptyNode = (text) => {
+    const s = document.createElement("span");
+    s.className = "storage-empty-val";
+    s.textContent = text;
+    return s;
+  };
+  if (val === null || val === undefined) return emptyNode("(not set)");
+
+  const chips = document.createElement("div");
+  chips.className = "storage-chips";
+  const addChip = (text) => {
+    const chip = document.createElement("span");
+    chip.className = "storage-chip";
+    chip.textContent = text;
+    chips.appendChild(chip);
+    return chip;
+  };
+
+  if (Array.isArray(val)) {
+    if (!val.length) return emptyNode("(empty)");
+    val.forEach((v) => addChip(typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)));
+  } else if (typeof val === "object") {
+    const entries = Object.entries(val);
+    if (!entries.length) return emptyNode("(empty)");
+    entries.forEach(([k, v]) =>
+      addChip(`${k}: ${typeof v === "object" && v !== null ? JSON.stringify(v) : v}`)
+    );
+  } else if (typeof val === "boolean" || val === "true" || val === "false") {
+    const isOn = val === true || val === "true";
+    addChip(String(val)).classList.add(isOn ? "storage-chip--true" : "storage-chip--false");
+  } else {
+    addChip(String(val));
+  }
+  return chips;
 }
 
 function refreshExperiencesBar() {
@@ -232,10 +329,16 @@ function refreshExperiencesBar() {
 }
 
 async function refreshToolsPanel() {
-  const { detectedTools = {} } = await chrome.storage.session.get("detectedTools");
+  const { detectedTools = {}, blockedTools = {} } =
+    await chrome.storage.session.get(["detectedTools", "blockedTools"]);
   const tools = activeTabId !== null ? (detectedTools[activeTabId] || []) : [];
+  const blocked = new Set(activeTabId !== null ? (blockedTools[activeTabId] || []) : []);
   toolsBodyEl.innerHTML = "";
-  if (!tools.length) return;
+
+  // A tool can stay blocked after its requests stop appearing (that's the
+  // point), so show blocked tools even once they're no longer detected.
+  const names = [...new Set([...tools, ...blocked])];
+  if (!names.length) return;
 
   const label = document.createElement("span");
   label.className = "storage-key";
@@ -244,16 +347,66 @@ async function refreshToolsPanel() {
 
   const chips = document.createElement("div");
   chips.className = "storage-chips";
-  for (const name of tools) {
+  for (const name of names) {
+    const isBlocked = blocked.has(name);
+
+    // Chip holds only the tool name; the block toggle sits beside it.
+    const item = document.createElement("span");
+    item.className = "tool-item";
+
     const chip = document.createElement("span");
-    chip.className = "storage-chip storage-chip--tool";
+    chip.className = "storage-chip storage-chip--tool" + (isBlocked ? " is-blocked" : "");
     chip.textContent = name;
-    chips.appendChild(chip);
+    item.appendChild(chip);
+
+    const btn = document.createElement("button");
+    btn.className = "tool-block" + (isBlocked ? " is-blocked" : "");
+    // The glyph shows the CURRENT state, not the pending action: a filled dot
+    // means the tool is live, the crossed circle means it's blocked.
+    btn.textContent = isBlocked ? "⊘" : "●";
+    btn.title = isBlocked
+      ? `${name} is blocked in this tab — click to allow it again`
+      : `${name} is running — click to block its requests in this tab`;
+    btn.setAttribute("aria-label", btn.title);
+    btn.setAttribute("aria-pressed", String(isBlocked));
+    btn.addEventListener("click", () => toggleToolBlock(name, !isBlocked));
+    item.appendChild(btn);
+
+    chips.appendChild(item);
   }
   toolsBodyEl.appendChild(chips);
 }
 
-storageRefreshEl.addEventListener("click", () => { refreshStoragePanel(); refreshToolsPanel(); });
+// Blocking only bites on the next page load, since a testing tool's script
+// is fetched early — so reload once the rules are confirmed in place.
+async function toggleToolBlock(tool, blocked) {
+  if (activeTabId === null) return;
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "set-tool-block", tool, tabId: activeTabId, blocked
+    });
+    await refreshToolsPanel();
+    if (res && res.ok) {
+      chrome.tabs.reload(activeTabId);
+    } else {
+      // Silent failure here is worse than useless — the icon would just sit
+      // there doing nothing. Surface the reason in the panel.
+      showToolBlockError((res && res.error) || "no response from the extension worker");
+    }
+  } catch (e) {
+    showToolBlockError(String(e && e.message ? e.message : e));
+  }
+}
+
+function showToolBlockError(message) {
+  console.warn("DataSpy: block toggle failed —", message);
+  const note = document.createElement("div");
+  note.className = "tool-block-error";
+  note.textContent = /reload the extension|Receiving end|no response/i.test(message)
+    ? "Blocking needs an extension reload: chrome://extensions → reload DataSpy, then reopen this panel."
+    : "Could not block: " + message;
+  toolsBodyEl.appendChild(note);
+}
 
 storageClearEl.addEventListener("click", async () => {
   chrome.runtime.sendMessage({ type: "clear-events" });
@@ -263,6 +416,7 @@ storageClearEl.addEventListener("click", async () => {
   _lastStorageSnapshot = "";
   knownTimes = new Set();
   groupOpenState.clear();
+  eventOpenState.clear();
   render();
   refreshExperiencesBar();
   await clearConversioStorage();
@@ -287,6 +441,10 @@ function checkEventHealth(ev) {
   if (!ev.name || !ev.name.startsWith("conversio_")) return null;
   const params = ev.eventParams || {};
   const missing = CONVERSIO_REQUIRED_PARAMS.filter((p) => !params[p]);
+  // An event carrying NONE of the interaction params is a different
+  // emission type (e.g. web vitals, experience reach) — those params
+  // don't apply to it, so no health check at all.
+  if (missing.length === CONVERSIO_REQUIRED_PARAMS.length) return null;
   return { healthy: missing.length === 0, missing };
 }
 
@@ -339,10 +497,10 @@ function kvRow(key, value) {
   return row;
 }
 
-function section(label, entries) {
+function section(label, entries, extraClass) {
   const frag = document.createDocumentFragment();
   const lab = document.createElement("div");
-  lab.className = "section-label";
+  lab.className = "section-label" + (extraClass ? " " + extraClass : "");
   lab.textContent = label;
   frag.appendChild(lab);
   for (const [k, v] of entries) frag.appendChild(kvRow(k, v));
@@ -367,6 +525,7 @@ function renderEvent(ev, isNew, warn) {
   const node = rowTemplate.content.cloneNode(true);
   const details = node.querySelector(".event");
   if (isNew) details.classList.add("is-new");
+  trackOpenState(details, ev);
 
   node.querySelector(".event-name").textContent = ev.name;
   node.querySelector(".event-meta").textContent = timeLabel(ev.time);
@@ -405,15 +564,29 @@ function renderEvent(ev, isNew, warn) {
 
   const body = node.querySelector(".event-body");
 
-  // Parameters (event params + user properties merged into one flat list)
-  const epEntries = Object.entries(ev.eventParams || {}).filter(([k]) => k !== "conversio_events");
+  // Parameters (event params + user properties merged into one flat list).
+  // conversio_events / conversio_experiences are session-level context the
+  // tag appends to every hit — the experiences bar surfaces them already,
+  // so they'd be noise here.
+  const epEntries = Object.entries(ev.eventParams || {})
+    .filter(([k]) => k !== "conversio_events" && k !== "conversio_experiences");
   const upEntries = Object.entries(ev.userProps || {});
-  const allParamEntries = [...epEntries, ...upEntries];
+
+  // conversio_id / conversio_vitals are emission metadata rather than
+  // interaction detail — split them out below a divider so the params that
+  // describe the event itself stay together.
+  const isMeta = ([k]) => k === "conversio_id" || k === "conversio_vitals";
+  const metaEntries = epEntries.filter(isMeta);
+  const allParamEntries = [...epEntries.filter((e) => !isMeta(e)), ...upEntries];
 
   if (allParamEntries.length) {
     body.appendChild(section("Parameters", allParamEntries));
-  } else {
+  } else if (!metaEntries.length) {
     body.appendChild(section("Raw params", Object.entries(ev.allParams || {})));
+  }
+
+  if (metaEntries.length) {
+    body.appendChild(section("Emission", metaEntries, "section-label--meta"));
   }
 
   // dataLayer pushes that preceded this GA4 hit
@@ -531,6 +704,7 @@ function renderDLEvent(ev, isNew) {
   const details = node.querySelector(".event");
   details.classList.add("event--dl");
   if (isNew) details.classList.add("is-new");
+  trackOpenState(details, ev);
 
   const nameEl = node.querySelector(".event-name");
   nameEl.textContent = ev.name;
@@ -686,6 +860,10 @@ function render() {
     .filter((ev) => !query || ev.name.toLowerCase().includes(query))
     .filter((ev) => eventMatchesParamFilter(ev, paramQuery));
 
+  // Rebuilding the list resets scroll, which would yank you away from an
+  // event you're reading. Restore it unless you're parked at the top.
+  const prevScroll = listEl.scrollTop;
+
   countEl.textContent = String(tabEvents.length);
   listEl.querySelectorAll(".nav-group").forEach((n) => n.remove());
   emptyEl.style.display = visible.length ? "none" : "";
@@ -702,6 +880,8 @@ function render() {
     frag.appendChild(renderGroup(group, i, i === 0));
   });
   listEl.appendChild(frag);
+
+  if (prevScroll > 0) listEl.scrollTop = prevScroll;
 }
 
 async function load(markKnown) {
@@ -725,7 +905,7 @@ chrome.storage.session.onChanged.addListener((changes) => {
     refreshExperiencesBar();
     if (pinned) listEl.scrollTop = 0;
   }
-  if (changes.detectedTools) refreshToolsPanel();
+  if (changes.detectedTools || changes.blockedTools) refreshToolsPanel();
 });
 
 // Fallback poll — catches events missed when the service worker was suspended
@@ -764,6 +944,7 @@ clearEl.addEventListener("click", async () => {
   _lastStorageSnapshot = "";
   knownTimes = new Set();
   groupOpenState.clear();
+  eventOpenState.clear();
   render();
   refreshExperiencesBar();
   if (activeTabId) {
@@ -800,6 +981,7 @@ async function initActiveTab() {
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   activeTabId = tabId;
   groupOpenState.clear();
+  eventOpenState.clear();
   render();
   refreshStoragePanel();
   refreshToolsPanel();
