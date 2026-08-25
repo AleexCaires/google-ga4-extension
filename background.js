@@ -385,19 +385,26 @@ chrome.sidePanel
   .setOptions({ enabled: false })
   .catch((e) => console.warn("sidePanel default:", e));
 
-chrome.action.onClicked.addListener(async (tab) => {
+chrome.action.onClicked.addListener((tab) => {
   if (!tab || tab.id === undefined || tab.id < 0) return;
-  try {
-    await chrome.sidePanel.setOptions({
-      tabId: tab.id,
-      path: "panel.html",
-      enabled: true
+  console.log("DataSpy: action clicked for tab", tab.id);
+
+  // Both calls are dispatched WITHOUT awaiting. sidePanel.open() requires the
+  // click's user-gesture token, and awaiting anything first spends it — the
+  // call then fails with "may only be called in response to a user gesture".
+  // API calls from one context are delivered in order, so the enable lands
+  // before the open.
+  chrome.sidePanel
+    .setOptions({ tabId: tab.id, path: "panel.html", enabled: true })
+    .catch((e) => console.warn("DataSpy: enabling panel failed", e));
+
+  chrome.sidePanel
+    .open({ tabId: tab.id })
+    .catch((e) => {
+      console.warn("DataSpy: opening panel failed", e);
+      // Enablement is what matters most; if open() was refused the panel can
+      // still be picked from Chrome's side-panel menu on this tab.
     });
-    // Needs the user gesture from this click, so open it here rather than later
-    await chrome.sidePanel.open({ tabId: tab.id });
-  } catch (e) {
-    console.warn("DataSpy: could not open side panel for tab", tab.id, e);
-  }
 });
 
 // The panel connects on load; the port closing means the panel was closed
