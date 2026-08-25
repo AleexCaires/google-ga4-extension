@@ -239,6 +239,11 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 .event.event--dl[open] { border-color: var(--accent); }
 .event-name--dl { color: var(--accent) !important; }
 
+/* The client's own events (client_cro), distinct from Conversio's green. */
+.event.event--client { border-color: rgba(227, 179, 65, 0.3); }
+.event.event--client[open] { border-color: var(--amber); }
+.event-name--client { color: var(--amber) !important; }
+
 .event-warn {
   font-size: 11px;
   color: var(--amber);
@@ -404,6 +409,21 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
   color: var(--green);
   border-color: rgba(86, 201, 141, 0.3);
   background: rgba(86, 201, 141, 0.07);
+}
+
+/* Interaction hit counts per experience prefix. */
+.exp-chip--count {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--bg-row);
+}
+
+/* Codes Conversio recorded that never reached GA4. */
+.exp-chip--missing {
+  color: #e05c5c;
+  border-color: rgba(224, 92, 92, 0.5);
+  background: rgba(224, 92, 92, 0.1);
+  font-weight: 600;
 }
 
 .exp-chip--abtasty {
@@ -576,6 +596,65 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
   border-radius: 4px;
   padding: 1px 5px;
   flex-shrink: 0;
+}
+
+/* Experience QA violations: ordering (interaction before its experience) and
+   segment/storage mismatch. Red because these are real wiring faults, with
+   the label naming which kind. */
+.qa-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #e05c5c;
+  background: rgba(224, 92, 92, 0.12);
+  border: 1px solid rgba(224, 92, 92, 0.5);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
+.event-body .section-label--qa { color: #e05c5c; }
+.event-body .kv--qa .k { color: #e05c5c; font-weight: 600; }
+.event-body .kv--qa .v { color: var(--text); }
+
+.qa-unverified {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+/* Shown only when analytics_storage is DENIED: the hit was sent but Analytics
+   won't process it, which is easy to miss since the event still appears. */
+.consent-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--amber);
+  background: rgba(227, 179, 65, 0.12);
+  border: 1px solid rgba(227, 179, 65, 0.45);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
+.event-body .kv .v--granted { color: var(--green); }
+.event-body .kv .v--denied { color: var(--amber); font-weight: 600; }
+
+.exp-chip--consent-granted {
+  color: var(--green);
+  border-color: rgba(86, 201, 141, 0.3);
+  background: rgba(86, 201, 141, 0.07);
+}
+
+.exp-chip--consent-denied {
+  color: var(--amber);
+  border-color: rgba(227, 179, 65, 0.45);
+  background: rgba(227, 179, 65, 0.1);
 }
 
 .trigger-badge {

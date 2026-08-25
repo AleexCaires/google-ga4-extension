@@ -429,7 +429,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (events.length) {
         // Stamp the correct time from the page
         const ts = msg.time || Date.now();
-        events.forEach(ev => { ev.time = ts; ev.fromPage = true; });
+        events.forEach(ev => {
+          ev.time = ts;
+          ev.fromPage = true;
+          // Conversio storage as it stood when this hit was sent. Absent on
+          // hits caught only by webRequest, which validation must treat as
+          // "unverified" rather than as a failure.
+          if (msg.storage) ev.storageAtHit = msg.storage;
+        });
         recordEvents(events);
       }
     } catch (e) {

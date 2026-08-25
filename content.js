@@ -15,7 +15,9 @@ window.addEventListener("message", (e) => {
 });
 
 document.addEventListener("__ga4spy_hit__", (e) => {
-  const { url, body, time } = e.detail || {};
+  const { url, body, time, storage } = e.detail || {};
   if (!url) return;
-  chrome.runtime.sendMessage({ type: "ga4-hit", url, body: body || "", time });
+  // `storage` is the Conversio sessionStorage state at the instant the hit was
+  // sent — what experience/event validation compares against.
+  chrome.runtime.sendMessage({ type: "ga4-hit", url, body: body || "", time, storage });
 });

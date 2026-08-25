@@ -54,34 +54,49 @@ function timeLabel(ts) {
 
 // ---- Conversio localStorage panel ------------------------------------
 
-// Keys the current Conversio script writes.
+// Keys shown in the storage panel.
+// conversioExperienceFired and conversioExperienceMap are deliberately absent:
+// Fired just restates conversioExperienceList, and the Map is verbose detail.
+// Both are still READ (see CONVERSIO_READ_KEYS) because QA validation needs
+// them — they're only hidden from the panel.
 const CONVERSIO_STORAGE_KEYS = [
   "conversioExperienceList",
   "conversioEventList",
-  "conversioExperienceFired",
-  "conversioExperienceMap",
   "conversio_vitals",
   "conversioVitalsPending",
   "conversioEmissionEnabled",
+];
+
+// Read but not displayed.
+const CONVERSIO_HIDDEN_KEYS = [
+  "conversioExperienceFired",
+  "conversioExperienceMap",
 ];
 
 // Earlier key names. Still read so older sites keep working, but only shown
 // when actually present — otherwise they'd sit there as permanent "(not set)".
 const CONVERSIO_LEGACY_KEYS = ["conversio_experiences", "conversio_events"];
 
-// Rows worth collapsing. conversioExperienceFired just restates
-// conversioExperienceList directly above it, and the experience map is verbose.
-const CONVERSIO_COLLAPSIBLE_KEYS = new Set([
-  "conversioExperienceFired",
-  "conversioExperienceMap",
-  "conversio_events",
-]);
+// Rows worth collapsing when they are shown at all.
+const CONVERSIO_COLLAPSIBLE_KEYS = new Set(["conversio_events"]);
 
 // Kept expanded regardless of length — the fired events are the main thing
 // you're watching, and the panel scrolls now if the list gets long.
 const CONVERSIO_ALWAYS_EXPANDED_KEYS = new Set(["conversioEventList"]);
 
-const CONVERSIO_ALL_STORAGE_KEYS = [...CONVERSIO_STORAGE_KEYS, ...CONVERSIO_LEGACY_KEYS];
+// "(not set)" is technically true but tells you nothing. For these keys the
+// absence itself is the finding, so say what it means.
+const CONVERSIO_EMPTY_LABELS = {
+  conversioEmissionEnabled: "(session not started — no tag trigger yet)",
+};
+
+// Everything read from the page: displayed keys, hidden-but-needed keys, and
+// the legacy names. Also the set that Clear wipes.
+const CONVERSIO_ALL_STORAGE_KEYS = [
+  ...CONVERSIO_STORAGE_KEYS,
+  ...CONVERSIO_HIDDEN_KEYS,
+  ...CONVERSIO_LEGACY_KEYS,
+];
 
 async function readConversioStorage() {
   if (!activeTabId) return null;
@@ -132,8 +147,13 @@ async function clearConversioStorage() {
   } catch (e) {}
 }
 
+// Latest storage read, kept so the interaction counter can compare the codes
+// Conversio has recorded against the hits actually sent to GA4.
+let currentStorageData = null;
+
 async function refreshStoragePanel() {
   const data = await readConversioStorage();
+  currentStorageData = data;
   storageBodyEl.innerHTML = "";
 
   if (!data) {
@@ -166,7 +186,7 @@ async function refreshStoragePanel() {
       label.textContent = key + ":";
       const meta = document.createElement("span");
       meta.className = "storage-empty-val";
-      meta.textContent = count === null ? "(not set)"
+      meta.textContent = count === null ? (CONVERSIO_EMPTY_LABELS[key] || "(not set)")
         : count === 0 ? "(empty)"
         : `${count} ${count === 1 ? "item" : "items"}`;
       summary.append(label, meta);
@@ -187,7 +207,7 @@ async function refreshStoragePanel() {
       label.className = "storage-key";
       label.textContent = key + ":";
       row.appendChild(label);
-      row.appendChild(storageValueNode(val));
+      row.appendChild(storageValueNode(val, CONVERSIO_EMPTY_LABELS[key]));
       storageBodyEl.appendChild(row);
     }
   }
@@ -210,14 +230,14 @@ function isNested(val) {
 // Render any storage value: arrays become one chip per item, objects one
 // "key: value" chip per entry (keys are dynamic — whatever is stored),
 // booleans a colour-coded chip, other scalars a plain chip.
-function storageValueNode(val) {
+function storageValueNode(val, emptyLabel) {
   const emptyNode = (text) => {
     const s = document.createElement("span");
     s.className = "storage-empty-val";
     s.textContent = text;
     return s;
   };
-  if (val === null || val === undefined) return emptyNode("(not set)");
+  if (val === null || val === undefined) return emptyNode(emptyLabel || "(not set)");
 
   const chips = document.createElement("div");
   chips.className = "storage-chips";
@@ -277,16 +297,50 @@ function refreshExperiencesBar() {
     if (id) abTastyTests.set(String(id), { name: name || String(id), variation });
   }
 
+  // Current consent state, taken from the most recent hit that carried gcs.
+  // Consent can be granted mid-session, so the latest hit is what counts.
+  let consent = null;
+  for (const ev of tabGA4) {
+    const c = parseConsent(ev);
+    if (c && c.known) { consent = c; break; }
+  }
+
+  const stats = interactionStats(tabGA4);
+
   experiencesBarEl.innerHTML = "";
   const hasConversio = conversioExps.size > 0;
   const hasABTasty = abTastyTests.size > 0;
+  const hasCounts = stats.perCode.size > 0 || stats.missing.length > 0;
 
-  if (!hasConversio && !hasABTasty) {
+  if (!hasConversio && !hasABTasty && !consent && !hasCounts) {
     experiencesBarEl.style.display = "none";
     return;
   }
 
   experiencesBarEl.style.display = "block";
+
+  if (consent) {
+    const block = document.createElement("div");
+    block.className = "exp-block";
+    const label = document.createElement("span");
+    label.className = "exp-label";
+    label.textContent = "Consent";
+    block.appendChild(label);
+    const chips = document.createElement("div");
+    chips.className = "exp-chips";
+    const chip = document.createElement("span");
+    chip.className = "exp-chip exp-chip--consent-"
+      + (consent.analyticsStorage ? "granted" : "denied");
+    chip.textContent = consent.analyticsStorage
+      ? `analytics granted · ${consent.raw}`
+      : `analytics DENIED · ${consent.raw}`;
+    chip.title = consent.analyticsStorage
+      ? "analytics_storage granted — hits are processed by Analytics"
+      : "analytics_storage denied — hits are still sent but Analytics won't process them";
+    chips.appendChild(chip);
+    block.appendChild(chips);
+    experiencesBarEl.appendChild(block);
+  }
 
   if (hasConversio) {
     const block = document.createElement("div");
@@ -303,6 +357,41 @@ function refreshExperiencesBar() {
       chip.textContent = id;
       chips.appendChild(chip);
     }
+    block.appendChild(chips);
+    experiencesBarEl.appendChild(block);
+  }
+
+  if (hasCounts) {
+    const block = document.createElement("div");
+    block.className = "exp-block";
+    const label = document.createElement("span");
+    label.className = "exp-label";
+    label.textContent = "Interactions";
+    block.appendChild(label);
+    const chips = document.createElement("div");
+    chips.className = "exp-chips";
+
+    // One chip per event code with its hit count — the code is what you're
+    // actually tracking, and a repeat firing shows as a higher count.
+    for (const [, entry] of [...stats.perCode].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const chip = document.createElement("span");
+      chip.className = "exp-chip exp-chip--count";
+      chip.textContent = `${entry.display} · ${entry.hits}`;
+      chip.title = `${entry.display} sent to GA4 ${entry.hits} time(s)`;
+      chips.appendChild(chip);
+    }
+
+    // Recorded by Conversio but never sent to GA4 — the tag didn't fire.
+    if (stats.missing.length) {
+      const chip = document.createElement("span");
+      chip.className = "exp-chip exp-chip--missing";
+      chip.textContent = `${stats.missing.length} not sent to GA4`;
+      chip.title = "In conversioEventList but no matching GA4 hit was seen:\n"
+        + stats.missing.join(", ")
+        + "\n\nThe interaction was recorded but the GA4 tag never fired.";
+      chips.appendChild(chip);
+    }
+
     block.appendChild(chips);
     experiencesBarEl.appendChild(block);
   }
@@ -437,6 +526,207 @@ const CONVERSIO_REQUIRED_PARAMS = [
   "conversio_action"
 ];
 
+// The client's own tracking, as opposed to Conversio's. Prefix-based so
+// client_cro and any future client_* event are both covered.
+function isClientEvent(ev) {
+  return ev.type !== "datalayer" && !!ev.name && ev.name.startsWith("client_");
+}
+
+// ---- experience QA ---------------------------------------------------
+//
+// Conversio segments come in two shapes:
+//   experience   PREFIX.XCO / PREFIX.XV1   e.g. WN003.XCO, FN088.XV1
+//   interaction  PREFIX + event code       e.g. WN003EV1G, FN089ECOC
+// PREFIX is the client code plus experience number (WN003, FN088), which is
+// what links an interaction back to the experience it belongs to.
+// Everything after ".X" is the variant. Deliberately permissive: real variants
+// include XCO, XV1, XV2 and suffixed forms like XV1R / XV2R, and a stricter
+// pattern silently drops the ones it doesn't know — which reads as "no
+// experience was ever recorded" and produces bogus ORDER failures.
+const SEG_EXPERIENCE_RE = /^([A-Za-z]{2}\d{3})\.X([A-Za-z0-9_-]+)$/;
+const SEG_INTERACTION_RE = /^([A-Za-z]{2}\d{3})([A-Za-z0-9_-]+)$/;
+
+function segmentInfo(segment) {
+  if (!segment) return null;
+  const s = String(segment).trim();
+  const exp = SEG_EXPERIENCE_RE.exec(s);
+  if (exp) return { kind: "experience", prefix: exp[1].toUpperCase(), raw: s };
+  const int = SEG_INTERACTION_RE.exec(s);
+  if (int) return { kind: "interaction", prefix: int[1].toUpperCase(), raw: s };
+  return { kind: "unknown", prefix: null, raw: s };
+}
+
+// Storage values arrive as arrays, JSON strings or comma-joined strings.
+function toList(val) {
+  if (val === null || val === undefined) return [];
+  if (Array.isArray(val)) return val.map((v) => String(v).trim()).filter(Boolean);
+  const s = String(val).trim();
+  if (!s) return [];
+  if (s.startsWith("[")) {
+    try { return toList(JSON.parse(s)); } catch (e) { /* fall through */ }
+  }
+  return s.split(",").map((v) => v.trim()).filter(Boolean);
+}
+
+function experiencesFromParam(ev) {
+  const raw = ev.eventParams?.conversio_experiences;
+  return toList(raw);
+}
+
+// Validate a Conversio/client event against the storage state captured at the
+// instant the hit was sent. Conversio writes the segment code into
+// sessionStorage before the GA4 hit follows, so anything missing from that
+// snapshot is a genuine ordering or wiring problem — not a timing artifact.
+// prefix -> earliest time an experience hit for it was seen in the feed.
+// Rebuilt each render; ordering is fundamentally about event sequence, so an
+// experience we watched fire counts even if storage disagrees.
+let experienceFirstSeen = new Map();
+
+function buildExperienceTimeline(tabEvents) {
+  const firstSeen = new Map();
+  for (const ev of tabEvents) {
+    if (!ev.name || !/^(conversio|client)_/.test(ev.name)) continue;
+    const info = segmentInfo(ev.eventParams?.conversio_segment);
+    if (!info || info.kind !== "experience") continue;
+    const prev = firstSeen.get(info.prefix);
+    if (prev === undefined || ev.time < prev) firstSeen.set(info.prefix, ev.time);
+  }
+  return firstSeen;
+}
+
+function checkExperienceQA(ev) {
+  if (ev.type === "datalayer") return null;
+  if (!ev.name || !/^(conversio|client)_/.test(ev.name)) return null;
+
+  const info = segmentInfo(ev.eventParams?.conversio_segment);
+  if (!info || info.kind === "unknown") return null;
+
+  // No snapshot means the page hook missed this hit (webRequest caught it
+  // instead). Unknown is not the same as broken — never flag it as a failure.
+  if (!ev.storageAtHit) {
+    return { status: "unverified", info, issues: [] };
+  }
+
+  const snap = ev.storageAtHit;
+  const expList = toList(snap.conversioExperienceList ?? snap.conversio_experiences);
+  const evtList = toList(snap.conversioEventList ?? snap.conversio_events);
+  const firedMap = snap.conversioExperienceFired;
+  const fired = firedMap && typeof firedMap === "object" && !Array.isArray(firedMap)
+    ? Object.keys(firedMap) : [];
+  const knownExps = [...expList, ...fired].map((s) => String(s).toUpperCase());
+
+  const issues = [];
+
+  if (info.kind === "interaction") {
+    // The headline check: an interaction must never precede its experience.
+    // Satisfied either by storage knowing the experience, or by us having
+    // watched an experience hit for the same prefix fire earlier.
+    const inStorage = knownExps.some((id) => id.startsWith(info.prefix));
+    const firstSeen = experienceFirstSeen.get(info.prefix);
+    const observedEarlier = firstSeen !== undefined && firstSeen <= ev.time;
+    if (!inStorage && !observedEarlier) {
+      issues.push({
+        code: "ORDER",
+        text: `${info.raw} fired before any ${info.prefix} experience was recorded`
+          + " (experiences at hit time: "
+          + (knownExps.length ? knownExps.join(", ") : "none") + ")",
+      });
+    }
+    // Its own code should already be in the stored event list.
+    if (!evtList.some((e) => String(e).toUpperCase() === info.raw.toUpperCase())) {
+      issues.push({
+        code: "MISMATCH",
+        text: `${info.raw} is not in conversioEventList (`
+          + (evtList.length ? evtList.join(", ") : "empty") + ")",
+      });
+    }
+  }
+
+  if (info.kind === "experience") {
+    if (!knownExps.some((id) => id === info.raw.toUpperCase())) {
+      issues.push({
+        code: "MISMATCH",
+        text: `${info.raw} is not in conversioExperienceList (`
+          + (expList.length ? expList.join(", ") : "empty") + ")",
+      });
+    }
+  }
+
+  // The experiences the hit claims vs the ones storage knows about.
+  for (const id of experiencesFromParam(ev)) {
+    if (!knownExps.includes(id.toUpperCase())) {
+      issues.push({
+        code: "MISMATCH",
+        text: `conversio_experiences lists ${id}, absent from storage at hit time`,
+      });
+    }
+  }
+
+  return { status: issues.length ? "fail" : "ok", info, issues };
+}
+
+// ---- interaction counter --------------------------------------------
+//
+// Counts interaction hits actually sent to GA4 and reconciles them against the
+// codes Conversio recorded in sessionStorage. A code sitting in storage with no
+// matching GA4 hit means the interaction happened but the tag never fired.
+//
+// The baseline matters: codes already in storage before DataSpy saw its first
+// hit were recorded before we were watching, so they can't be counted as
+// missing. Without this, pressing Clear (or opening the panel mid-session)
+// would report every earlier code as lost.
+function interactionStats(tabGA4) {
+  // Keyed by uppercased code for matching, but the display form keeps the
+  // casing as actually sent.
+  const perCode = new Map();            // CODE -> { display, hits }
+  const seenCodes = new Set();
+
+  for (const ev of tabGA4) {
+    if (!ev.name || !/^(conversio|client)_/.test(ev.name)) continue;
+    const info = segmentInfo(ev.eventParams?.conversio_segment);
+    if (!info || info.kind !== "interaction") continue;
+    const key = info.raw.toUpperCase();
+    const entry = perCode.get(key) || { display: info.raw, hits: 0 };
+    entry.hits++;
+    perCode.set(key, entry);
+    seenCodes.add(key);
+  }
+
+  // Oldest hit carrying a snapshot defines what was already recorded.
+  let baseline = [];
+  for (let i = tabGA4.length - 1; i >= 0; i--) {
+    const s = tabGA4[i].storageAtHit;
+    if (s) {
+      baseline = toList(s.conversioEventList ?? s.conversio_events)
+        .map((c) => c.toUpperCase());
+      break;
+    }
+  }
+
+  const stored = currentStorageData
+    ? toList(currentStorageData.conversioEventList ?? currentStorageData.conversio_events)
+        .map((c) => c.toUpperCase())
+    : [];
+
+  const missing = stored.filter((c) => !seenCodes.has(c) && !baseline.includes(c));
+
+  return { perCode, missing, storedCount: stored.length, seenCount: seenCodes.size };
+}
+
+// ---- consent state ---------------------------------------------------
+//
+// GA4 encodes consent in gcs=G1<ad_storage><analytics_storage>, 1 granted /
+// 0 denied. Hits are still SENT when consent is denied, so the event showing
+// up in the feed says nothing about whether Analytics will process it — gcs
+// is the only way to tell. Already captured in allParams on every hit.
+function parseConsent(ev) {
+  const raw = ev.allParams?.gcs || "";
+  if (!raw) return null;
+  const m = /^G1(\d)(\d)$/.exec(raw);
+  if (!m) return { raw, known: false };
+  return { raw, known: true, adStorage: m[1] === "1", analyticsStorage: m[2] === "1" };
+}
+
 function checkEventHealth(ev) {
   if (!ev.name || !ev.name.startsWith("conversio_")) return null;
   const params = ev.eventParams || {};
@@ -527,8 +817,16 @@ function renderEvent(ev, isNew, warn) {
   if (isNew) details.classList.add("is-new");
   trackOpenState(details, ev);
 
-  node.querySelector(".event-name").textContent = ev.name;
+  const nameEl = node.querySelector(".event-name");
+  nameEl.textContent = ev.name;
   node.querySelector(".event-meta").textContent = timeLabel(ev.time);
+
+  // The client's own CRO events (client_cro) sit alongside Conversio's and are
+  // easy to confuse at a glance, so give them their own colour.
+  if (isClientEvent(ev)) {
+    details.classList.add("event--client");
+    nameEl.classList.add("event-name--client");
+  }
 
   if (warn) {
     const icon = document.createElement("span");
@@ -539,12 +837,14 @@ function renderEvent(ev, isNew, warn) {
   }
 
   const segment = ev.eventParams?.conversio_segment || "";
+  // Uses segmentInfo so the badge and the QA validator can never disagree
+  // about what counts as an experience segment.
   if (segment.endsWith("Q")) {
     const badge = document.createElement("span");
     badge.className = "trigger-badge";
     badge.textContent = "TRIGGER";
     node.querySelector("summary").insertBefore(badge, node.querySelector(".event-meta"));
-  } else if (/\.X(CO|V\d)/i.test(segment)) {
+  } else if (segmentInfo(segment)?.kind === "experience") {
     const badge = document.createElement("span");
     badge.className = "exp-badge";
     badge.textContent = "EXPERIENCE";
@@ -559,6 +859,31 @@ function renderEvent(ev, isNew, warn) {
       ? "All required Conversio parameters present"
       : "Missing: " + health.missing.join(", ");
     badge.textContent = health.healthy ? "✓" : "✗";
+    node.querySelector("summary").insertBefore(badge, node.querySelector(".event-meta"));
+  }
+
+  // Experience QA: one badge per distinct issue type, so ORDER and MISMATCH
+  // are visible without expanding the row.
+  const qa = checkExperienceQA(ev);
+  if (qa && qa.status === "fail") {
+    for (const code of [...new Set(qa.issues.map((i) => i.code))]) {
+      const badge = document.createElement("span");
+      badge.className = "qa-badge";
+      badge.textContent = code;
+      badge.title = qa.issues.filter((i) => i.code === code).map((i) => i.text).join("\n");
+      node.querySelector("summary").insertBefore(badge, node.querySelector(".event-meta"));
+    }
+  }
+
+  // Flag only DENIED analytics consent. Granted is the normal case and a
+  // badge on every row would just be noise — the decoded state is always
+  // available in the body.
+  const consent = parseConsent(ev);
+  if (consent && consent.known && !consent.analyticsStorage) {
+    const badge = document.createElement("span");
+    badge.className = "consent-badge";
+    badge.textContent = "NO CONSENT";
+    badge.title = `analytics_storage denied (gcs=${consent.raw}) — the hit was sent but Analytics won't process it`;
     node.querySelector("summary").insertBefore(badge, node.querySelector(".event-meta"));
   }
 
@@ -587,6 +912,74 @@ function renderEvent(ev, isNew, warn) {
 
   if (metaEntries.length) {
     body.appendChild(section("Emission", metaEntries, "section-label--meta"));
+  }
+
+  // Conversio storage as it stood when this hit was sent. Only Conversio
+  // events care, and only when the page hook captured it.
+  if (ev.storageAtHit && ev.name && /^(conversio|client)_/.test(ev.name)) {
+    const snap = ev.storageAtHit;
+    const fmt = (v) => {
+      if (v === null || v === undefined) return "(not set)";
+      if (Array.isArray(v)) return v.length ? v.join(", ") : "(empty)";
+      if (typeof v === "object") {
+        const ks = Object.keys(v);
+        return ks.length ? ks.join(", ") : "(empty)";
+      }
+      return String(v);
+    };
+    const rows = [
+      ["experiences", fmt(snap.conversioExperienceList ?? snap.conversio_experiences)],
+      ["events", fmt(snap.conversioEventList ?? snap.conversio_events)],
+    ];
+    body.appendChild(section("Storage at hit", rows, "section-label--meta"));
+  }
+
+  // QA detail: why the badges fired, or why we couldn't judge.
+  if (qa && qa.status === "fail") {
+    const frag = document.createDocumentFragment();
+    const lab = document.createElement("div");
+    lab.className = "section-label section-label--qa";
+    lab.textContent = "QA issues";
+    frag.appendChild(lab);
+    for (const issue of qa.issues) {
+      const row = document.createElement("div");
+      row.className = "kv kv--qa";
+      const k = document.createElement("span");
+      k.className = "k";
+      k.textContent = issue.code;
+      const v = document.createElement("span");
+      v.className = "v";
+      v.textContent = issue.text;
+      row.append(k, v);
+      frag.appendChild(row);
+    }
+    body.appendChild(frag);
+  } else if (qa && qa.status === "unverified") {
+    const note = document.createElement("div");
+    note.className = "qa-unverified";
+    note.textContent = "QA not verified — no storage snapshot for this hit";
+    note.title = "The hit was captured by webRequest rather than the page hook, "
+      + "so the sessionStorage state at send time is unknown.";
+    body.appendChild(note);
+  }
+
+  // Decoded consent state, shown for every GA4 hit that carries gcs.
+  if (consent) {
+    const rows = consent.known
+      ? [
+          ["analytics_storage", consent.analyticsStorage ? "granted" : "denied"],
+          ["ad_storage", consent.adStorage ? "granted" : "denied"],
+          ["gcs", consent.raw],
+        ]
+      : [["gcs", consent.raw + " (unrecognised format)"]];
+    const frag = section("Consent", rows, "section-label--meta");
+    // Colour the analytics_storage value by state — it's the one that decides
+    // whether the hit counts.
+    if (consent.known) {
+      const first = frag.querySelector(".kv .v");
+      if (first) first.classList.add(consent.analyticsStorage ? "v--granted" : "v--denied");
+    }
+    body.appendChild(frag);
   }
 
   // dataLayer pushes that preceded this GA4 hit
@@ -863,6 +1256,9 @@ function render() {
   // Rebuilding the list resets scroll, which would yank you away from an
   // event you're reading. Restore it unless you're parked at the top.
   const prevScroll = listEl.scrollTop;
+
+  // Must be built before any row renders — the ORDER check reads it.
+  experienceFirstSeen = buildExperienceTimeline(tabEvents);
 
   countEl.textContent = String(tabEvents.length);
   listEl.querySelectorAll(".nav-group").forEach((n) => n.remove());
