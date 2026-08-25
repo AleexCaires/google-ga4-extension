@@ -367,10 +367,38 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.action.setBadgeText({ text: "" });
 });
 
-// Clicking the toolbar icon opens the side panel
+// ---- per-tab side panel ------------------------------------------------
+//
+// Chrome's side panel is window-level: opened once, it shows on every tab in
+// that window. To scope it to the tab you opened it on, the panel is DISABLED
+// by default and enabled only for that specific tab.
+//
+// openPanelOnActionClick must be false: with it on, Chrome swallows the click
+// and action.onClicked never fires, leaving no chance to enable the tab first.
 chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
+  .setPanelBehavior({ openPanelOnActionClick: false })
   .catch((e) => console.warn("sidePanel behavior:", e));
+
+// Runs on every service-worker start, not just install — the default must be
+// re-asserted whenever the worker respawns.
+chrome.sidePanel
+  .setOptions({ enabled: false })
+  .catch((e) => console.warn("sidePanel default:", e));
+
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab || tab.id === undefined || tab.id < 0) return;
+  try {
+    await chrome.sidePanel.setOptions({
+      tabId: tab.id,
+      path: "panel.html",
+      enabled: true
+    });
+    // Needs the user gesture from this click, so open it here rather than later
+    await chrome.sidePanel.open({ tabId: tab.id });
+  } catch (e) {
+    console.warn("DataSpy: could not open side panel for tab", tab.id, e);
+  }
+});
 
 // The panel connects on load; the port closing means the panel was closed
 chrome.runtime.onConnect.addListener((port) => {

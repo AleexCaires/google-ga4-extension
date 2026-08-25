@@ -1369,12 +1369,23 @@ function connectToBackground() {
 connectToBackground();
 
 // Track which tab is active so the panel only shows that tab's events.
+// The panel is opened per tab, so the tab that was active when this instance
+// loaded is the one it belongs to. Remembering it keeps a hidden panel from
+// quietly re-pointing at whatever tab you switched to (and injecting storage
+// reads into it).
+let ownerTabId = null;
+
 async function initActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab) activeTabId = tab.id;
+  if (tab) {
+    activeTabId = tab.id;
+    ownerTabId = tab.id;
+  }
 }
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
+  // Ignore other tabs — this panel belongs to ownerTabId.
+  if (ownerTabId !== null && tabId !== ownerTabId) return;
   activeTabId = tabId;
   groupOpenState.clear();
   eventOpenState.clear();
