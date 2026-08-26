@@ -12,6 +12,7 @@ const storagePanelEl = document.getElementById("storage-panel");
 const storageBodyEl = document.getElementById("storage-body");
 const storageClearEl = document.getElementById("storage-clear");
 const toolsBodyEl = document.getElementById("tools-body");
+const alertBarEl = document.getElementById("alert-bar");
 const rowTemplate = document.getElementById("event-row-template");
 
 let allEvents = [];
@@ -417,6 +418,36 @@ function refreshExperiencesBar() {
   }
 }
 
+// Explain an empty feed when the cause is that GA4/GTM can't be reached.
+// A blank panel otherwise looks like a broken extension.
+async function refreshAlertBar() {
+  const { blockedEndpoints = {} } = await chrome.storage.session.get("blockedEndpoints");
+  const failures = activeTabId !== null ? (blockedEndpoints[activeTabId] || []) : [];
+  alertBarEl.innerHTML = "";
+
+  if (!failures.length) {
+    alertBarEl.style.display = "none";
+    return;
+  }
+
+  alertBarEl.style.display = "block";
+
+  const title = document.createElement("div");
+  title.className = "alert-title";
+  title.textContent = "No GA4 hits can be captured on this page";
+  alertBarEl.appendChild(title);
+
+  const body = document.createElement("div");
+  body.className = "alert-body";
+  const hosts = [...new Set(failures.map((f) => f.host))];
+  const errs = [...new Set(failures.map((f) => f.error))];
+  body.textContent = `${hosts.join(", ")} failed to load (${errs.join(", ")}). `
+    + "With Google Tag Manager unreachable no tag can fire, so the page sends "
+    + "no GA4 hits — the dataLayer feed below still works. Usually a DNS "
+    + "blocklist, VPN filter or ad blocker.";
+  alertBarEl.appendChild(body);
+}
+
 async function refreshToolsPanel() {
   const { detectedTools = {}, blockedTools = {} } =
     await chrome.storage.session.get(["detectedTools", "blockedTools"]);
@@ -539,12 +570,20 @@ function isClientEvent(ev) {
 //   interaction  PREFIX + event code       e.g. WN003EV1G, FN089ECOC
 // PREFIX is the client code plus experience number (WN003, FN088), which is
 // what links an interaction back to the experience it belongs to.
+// The prefix is the client code plus experience number, optionally followed by
+// a trigger number: CO123 and CO123.1 are DIFFERENT experiences, so an
+// interaction under one is not covered by the other's exposure.
+//
 // Everything after ".X" is the variant. Deliberately permissive: real variants
 // include XCO, XV1, XV2 and suffixed forms like XV1R / XV2R, and a stricter
 // pattern silently drops the ones it doesn't know — which reads as "no
 // experience was ever recorded" and produces bogus ORDER failures.
-const SEG_EXPERIENCE_RE = /^([A-Za-z]{2}\d{3})\.X([A-Za-z0-9_-]+)$/;
-const SEG_INTERACTION_RE = /^([A-Za-z]{2}\d{3})([A-Za-z0-9_-]+)$/;
+//
+//   experience   CO123.XCO      CO123.1.XV1R
+//   interaction  CO123EV1R      CO123.1EV1R
+const SEG_PREFIX = "([A-Za-z]{2}\\d{3}(?:\\.\\d+)?)";
+const SEG_EXPERIENCE_RE = new RegExp(`^${SEG_PREFIX}\\.X([A-Za-z0-9_-]+)$`);
+const SEG_INTERACTION_RE = new RegExp(`^${SEG_PREFIX}([A-Za-z0-9_-]+)$`);
 
 function segmentInfo(segment) {
   if (!segment) return null;
@@ -615,13 +654,20 @@ function checkExperienceQA(ev) {
     ? Object.keys(firedMap) : [];
   const knownExps = [...expList, ...fired].map((s) => String(s).toUpperCase());
 
+  // Compare parsed prefixes, not string prefixes: startsWith would treat a
+  // CO123.1 exposure as covering a plain CO123 interaction, and those are
+  // different experiences.
+  const knownPrefixes = new Set(
+    knownExps.map((id) => segmentInfo(id)?.prefix).filter(Boolean)
+  );
+
   const issues = [];
 
   if (info.kind === "interaction") {
     // The headline check: an interaction must never precede its experience.
     // Satisfied either by storage knowing the experience, or by us having
     // watched an experience hit for the same prefix fire earlier.
-    const inStorage = knownExps.some((id) => id.startsWith(info.prefix));
+    const inStorage = knownPrefixes.has(info.prefix);
     const firstSeen = experienceFirstSeen.get(info.prefix);
     const observedEarlier = firstSeen !== undefined && firstSeen <= ev.time;
     if (!inStorage && !observedEarlier) {
@@ -1266,6 +1312,13 @@ function render() {
 
   if (query && !visible.length && tabEvents.length) {
     emptyEl.querySelector("p").textContent = "No events match that filter.";
+  } else if (!tabEvents.length && (allEvents.length || allDLEvents.length)) {
+    // Events were captured but none belong to the tab we're pointed at.
+    // Saying "nothing captured" here hides a real fault (as a bad tab
+    // binding once did), so name what's actually happening.
+    const total = allEvents.length + allDLEvents.length;
+    emptyEl.querySelector("p").textContent =
+      `${total} event${total === 1 ? "" : "s"} captured, but none on this tab.`;
   } else {
     emptyEl.querySelector("p").textContent = "No events captured yet.";
   }
@@ -1302,6 +1355,7 @@ chrome.storage.session.onChanged.addListener((changes) => {
     if (pinned) listEl.scrollTop = 0;
   }
   if (changes.detectedTools || changes.blockedTools) refreshToolsPanel();
+  if (changes.blockedEndpoints) refreshAlertBar();
 });
 
 // Fallback poll — catches events missed when the service worker was suspended
@@ -1369,23 +1423,26 @@ function connectToBackground() {
 connectToBackground();
 
 // Track which tab is active so the panel only shows that tab's events.
-// The panel is opened per tab, so the tab that was active when this instance
-// loaded is the one it belongs to. Remembering it keeps a hidden panel from
-// quietly re-pointing at whatever tab you switched to (and injecting storage
-// reads into it).
-let ownerTabId = null;
-
-async function initActiveTab() {
+// Follow the active tab. An earlier version locked onto the tab present when
+// the panel loaded, but that query can resolve to the wrong tab (or none) and
+// the lock left the panel pointed somewhere with no events — an empty feed
+// with no way to recover. Drift while the panel is hidden is prevented by the
+// visibility checks below instead, which is all the lock was really for.
+async function syncActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab) {
+  if (tab && tab.id !== undefined && tab.id !== activeTabId) {
     activeTabId = tab.id;
-    ownerTabId = tab.id;
+    return true;
   }
+  return false;
 }
 
+const initActiveTab = syncActiveTab;
+
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  // Ignore other tabs — this panel belongs to ownerTabId.
-  if (ownerTabId !== null && tabId !== ownerTabId) return;
+  // While hidden the panel isn't being looked at, so don't re-point it (and
+  // don't inject storage reads into unrelated tabs).
+  if (document.hidden) return;
   activeTabId = tabId;
   groupOpenState.clear();
   eventOpenState.clear();
@@ -1393,6 +1450,22 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   refreshStoragePanel();
   refreshToolsPanel();
   refreshExperiencesBar();
+  refreshAlertBar();
+});
+
+// Coming back into view, re-read which tab is active: activation may have
+// happened while we were ignoring events above.
+document.addEventListener("visibilitychange", async () => {
+  if (document.hidden) return;
+  if (await syncActiveTab()) {
+    groupOpenState.clear();
+    eventOpenState.clear();
+  }
+  render();
+  refreshStoragePanel();
+  refreshToolsPanel();
+  refreshExperiencesBar();
+  refreshAlertBar();
 });
 
 // Re-read storage after the page finishes loading so we catch values
@@ -1404,4 +1477,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 toggleDLEl.classList.add("active");
-initActiveTab().then(() => { load(true); refreshStoragePanel(); refreshToolsPanel(); refreshExperiencesBar(); });
+initActiveTab().then(() => {
+  load(true);
+  refreshStoragePanel();
+  refreshToolsPanel();
+  refreshExperiencesBar();
+  refreshAlertBar();
+});

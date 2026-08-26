@@ -147,6 +147,57 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   });
 });
 
+// ---- unreachable analytics endpoints -----------------------------------
+//
+// If GTM or GA4 can't be fetched (DNS blackhole, VPN filter, ad blocker), no
+// hit is ever sent and there is nothing to capture. Without surfacing this the
+// panel just looks empty, which reads as a broken extension. Record the
+// failures so the panel can say what's actually happening.
+const BLOCK_WATCH_URLS = [
+  "*://*.googletagmanager.com/*",
+  "*://*.google-analytics.com/*",
+  "*://*.analytics.google.com/*"
+];
+
+chrome.webRequest.onErrorOccurred.addListener(
+  (details) => {
+    if (details.tabId === undefined || details.tabId < 0) return;
+    // Cancellations are normal (navigation away); only real failures matter.
+    if (/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT$/.test(details.error || "")) {
+      if (!/ERR_BLOCKED_BY_CLIENT/.test(details.error)) return;
+    }
+    let host = "";
+    try { host = new URL(details.url).hostname; } catch (e) { return; }
+    chrome.storage.session.get("blockedEndpoints").then(({ blockedEndpoints = {} }) => {
+      const list = blockedEndpoints[details.tabId] || [];
+      const entry = { host, error: details.error || "unknown" };
+      if (list.some((e) => e.host === entry.host && e.error === entry.error)) return;
+      list.push(entry);
+      blockedEndpoints[details.tabId] = list.slice(0, 8);
+      chrome.storage.session.set({ blockedEndpoints });
+    });
+  },
+  { urls: BLOCK_WATCH_URLS }
+);
+
+// Reset per tab on navigation so a fixed environment clears the warning.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== "loading") return;
+  chrome.storage.session.get("blockedEndpoints").then(({ blockedEndpoints = {} }) => {
+    if (!blockedEndpoints[tabId]) return;
+    delete blockedEndpoints[tabId];
+    chrome.storage.session.set({ blockedEndpoints });
+  });
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.get("blockedEndpoints").then(({ blockedEndpoints = {} }) => {
+    if (!blockedEndpoints[tabId]) return;
+    delete blockedEndpoints[tabId];
+    chrome.storage.session.set({ blockedEndpoints });
+  });
+});
+
 // ---- helpers ----------------------------------------------------------
 
 function paramsToObject(searchParams) {

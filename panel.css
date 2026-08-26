@@ -362,6 +362,27 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
   padding: 0 6px;
 }
 
+/* Alert bar: why the feed is empty when it isn't the extension's fault. */
+.alert-bar {
+  border-bottom: 1px solid rgba(224, 92, 92, 0.4);
+  background: rgba(224, 92, 92, 0.08);
+  padding: 8px 12px;
+}
+
+.alert-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #e05c5c;
+  margin-bottom: 3px;
+}
+
+.alert-body {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
 /* Experiences bar */
 .experiences-bar {
   border-bottom: 1px solid var(--border);
