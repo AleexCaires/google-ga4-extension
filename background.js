@@ -9,11 +9,14 @@ const MAX_DL_EVENTS = 300;
 
 // GA4 collect endpoints. Add your own server-side GTM domain here if needed,
 // and also add it to host_permissions in manifest.json.
+// Matched on PATH, not domain. Server-side GTM serves GA4 from a first-party
+// custom domain (metrics.example.com/g/collect?v=2), so a domain allowlist
+// misses those setups entirely — which is how Belmond's hits went unseen.
+// The /g/collect and /mp/collect paths are GA4-specific: Universal Analytics
+// used /collect, /j/collect and /r/collect, so this doesn't pick up UA.
 const URL_FILTERS = [
-  "*://*.google-analytics.com/g/collect*",
-  "*://*.google-analytics.com/mp/collect*",
-  "*://*.analytics.google.com/g/collect*",
-  "*://*.googletagmanager.com/g/collect*"
+  "*://*/g/collect*",
+  "*://*/mp/collect*"
 ];
 
 // ---- A/B tool detection -----------------------------------------------

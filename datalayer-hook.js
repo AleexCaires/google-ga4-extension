@@ -34,7 +34,11 @@
   window.dataLayer = _dl;
 
   // ---- GA4 network interception ---------------------------------------------
-  const GA4_RE = /google-analytics\.com\/(g|mp)\/collect|analytics\.google\.com\/g\/collect|googletagmanager\.com\/g\/collect/;
+  // Matched on PATH, not domain — server-side GTM serves GA4 from a
+  // first-party custom domain, which a domain allowlist would miss.
+  // /g/collect and /mp/collect are GA4-specific; Universal Analytics used
+  // /collect, /j/collect and /r/collect, so UA hits aren't picked up.
+  const GA4_RE = /\/(?:g|mp)\/collect(?:[/?#]|$)/;
 
   function getUrl(input) {
     if (typeof input === "string") return input;
