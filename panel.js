@@ -269,8 +269,10 @@ function storageValueNode(val, emptyLabel) {
 }
 
 function refreshExperiencesBar() {
+  // Same tabId -1 allowance as getMergedEvents, so the consent chip,
+  // experience chips and interaction counts see worker-sent hits too.
   const tabGA4 = activeTabId !== null
-    ? allEvents.filter((ev) => ev.tabId === activeTabId)
+    ? allEvents.filter((ev) => ev.tabId === activeTabId || ev.tabId === -1)
     : allEvents;
   const tabDL = activeTabId !== null
     ? allDLEvents.filter((ev) => ev.tabId === activeTabId || ev.tabId === -1)
@@ -1272,8 +1274,13 @@ function renderGroup(group, groupIndex, isNewest) {
 }
 
 function getMergedEvents() {
+  // tabId -1 means the hit came from a context with no tab (a worker) and the
+  // origin could not be matched to one. Show it rather than dropping it: a
+  // silently hidden event looks exactly like a tag that never fired, which is
+  // the worst possible failure for a debugging tool. Matches how dataLayer
+  // events have always been treated.
   const ga4 = activeTabId !== null
-    ? allEvents.filter((ev) => ev.tabId === activeTabId)
+    ? allEvents.filter((ev) => ev.tabId === activeTabId || ev.tabId === -1)
     : allEvents;
   if (!showDL) return ga4;
   const dl = activeTabId !== null

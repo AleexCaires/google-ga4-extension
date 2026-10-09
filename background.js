@@ -11,11 +11,16 @@ const MAX_DL_EVENTS = 300;
 // and also add it to host_permissions in manifest.json.
 // Matched on PATH, not domain. Server-side GTM serves GA4 from a first-party
 // custom domain (metrics.example.com/g/collect?v=2), so a domain allowlist
-// misses those setups entirely — which is how Belmond's hits went unseen.
-// The /g/collect and /mp/collect paths are GA4-specific: Universal Analytics
-// used /collect, /j/collect and /r/collect, so this doesn't pick up UA.
+// misses those setups entirely, which is how Belmond's hits went unseen.
+//
+// /g/s/collect is a GA4 variant seen in the wild alongside /g/collect; it was
+// being dropped because the path did not match exactly.
+//
+// These paths are GA4-specific: Universal Analytics used /collect, /j/collect
+// and /r/collect, so this doesn't pick up UA.
 const URL_FILTERS = [
   "*://*/g/collect*",
+  "*://*/g/s/collect*",
   "*://*/mp/collect*"
 ];
 
@@ -564,11 +569,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ---- the listener ------------------------------------------------------
 
+// A hit sent from a worker has no associated tab, so webRequest reports
+// tabId -1. The panel filters events by tab, so those hits were captured and
+// then silently dropped from the display (seen on sites using server-side
+// tagging). Attribute them to the tab serving the same origin instead.
+const originTabCache = new Map();   // origin -> { tabId, at }
+
+async function resolveTabFromInitiator(initiator) {
+  if (!initiator || !/^https?:\/\//.test(initiator)) return -1;
+  const cached = originTabCache.get(initiator);
+  if (cached && Date.now() - cached.at < 5000) return cached.tabId;
+  try {
+    const tabs = await chrome.tabs.query({ url: initiator + "/*" });
+    // Prefer the active tab when several share the origin.
+    const tab = tabs.find((t) => t.active) || tabs[0];
+    const tabId = tab && tab.id !== undefined ? tab.id : -1;
+    originTabCache.set(initiator, { tabId, at: Date.now() });
+    if (originTabCache.size > 50) {
+      originTabCache.delete(originTabCache.keys().next().value);
+    }
+    return tabId;
+  } catch (e) {
+    return -1;
+  }
+}
+
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     try {
       const events = extractEvents(details);
-      if (events.length) recordEvents(events);
+      if (!events.length) return;
+      if (details.tabId >= 0) { recordEvents(events); return; }
+      // Unknown tab: resolve from the initiator before recording. If that
+      // fails the events still record with -1, and the panel shows them
+      // rather than hiding them.
+      resolveTabFromInitiator(details.initiator).then((tabId) => {
+        if (tabId >= 0) events.forEach((ev) => { ev.tabId = tabId; });
+        recordEvents(events);
+      });
     } catch (e) {
       console.warn("GA4 Event Spy parse error:", e);
     }
